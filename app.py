@@ -230,9 +230,9 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                     target = "ad_unit"
             elif "dinh dang" in key or "ad format" in key or "format" in key or "ad type" in key:
                 target = "ad_format"
-            elif ("thu nhap" in key or "doanh thu" in key hoặc "estimated earnings" in key):
+            elif ("thu nhap" in key or "doanh thu" in key or "estimated earnings" in key):
                 target = "estimated_earnings"
-            elif ("yeu cau da khop" in key hoặc ("matched" in key and "request" in key)):
+            elif ("yeu cau da khop" in key or ("matched" in key and "request" in key)):
                 target = "matched_requests"
             elif "yeu cau" in key or "requests" in key:
                 if not any(b in key for b in BIDDING_BLOCKERS):
@@ -246,7 +246,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                 target = "clicks"
             elif "ecpm" in key:
                 target = "ecpm_input"
-            elif "tien te" in key or "currency" in key:
+            elif ("tien te" in key or "currency" in key):
                 target = "currency"
             elif "app id" in key or ("id" in key and "app" in key):
                 target = "app_id"
