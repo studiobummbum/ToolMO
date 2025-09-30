@@ -591,7 +591,6 @@ def _wrap_for_plotly(val: str, width: int = 22) -> str:
     s = "" if val is None else str(val)
     if not s:
         return ""
-    # ưu tiên ngắt theo '_' sau đó fallback theo độ dài
     s = s.replace("_", "_<br>")
     parts = []
     for seg in s.split("<br>"):
@@ -608,7 +607,6 @@ def render_table(df_print: pd.DataFrame, height: int, highlight_b: bool = False,
         st.dataframe(df_print, use_container_width=True, hide_index=True, column_config=col_cfg, height=height)
         return
 
-    # Cho Plotly: bẻ dòng ở cột dài
     df_wrap = df_print.copy()
     for col in [c for c in ["ad_name", "ad_unit", "app"] if c in df_wrap.columns]:
         df_wrap[col] = df_wrap[col].apply(lambda x: _wrap_for_plotly(x, width=22))
@@ -848,6 +846,18 @@ persist_active_tab(tab_labels)
 # =========================
 with tabs[0]:
     st.subheader("Bảng tổng hợp")
+
+    # === Hướng dẫn (Manual Floor Log) ===
+    with st.expander("Hướng dẫn", expanded=True):
+        st.markdown(
+            """
+- B1: Upload file csv lên
+- B2: Ở phần bộ lọc phía bên trái thì có thể chọn theo tùy chọn, nếu chưa có mapping ads unit code thì vào phần ads unit code làm theo hướng dẫn
+- B3: Bật option mapping ads unit code để report xem dễ hơn
+- B4: Nếu muốn xem nhiều report thì add thêm, còn không thì chỉ việc X file csv đó đi thì sẽ không bị lẫn data
+            """
+        )
+
     df = st.session_state.get("global_df")
     if df is None or df.empty:
         st.info("Chưa có dữ liệu sau bộ lọc chung.")
@@ -1164,6 +1174,19 @@ def analysis_to_text(prefix: str, label: str, data: Dict[str, Dict[str, float]],
 
 with tabs[1]:
     st.subheader("Checkver — So sánh 2 version (1 tệp)")
+
+    # === Hướng dẫn (Checkver) ===
+    with st.expander("Hướng dẫn", expanded=True):
+        st.markdown(
+            """
+- B1: Upload file CSV Admob lên, CVS này có thể dùng chung với Manual Floor Log
+- B2: Upload file CSV từ Firebase Analytics phần Version. Upload xong nhấn nạp firebase 
+- B3: Phần bộ lọc phía bên trái nếu chưa mapping thì phải thêm mapping ads name vào không là lỗi, không ra đâu
+- B4: Chọn version. Version A là ver cũ, Version B là ver mới
+- B5: Ở cuối cùng có nút Checkver. Ấn vào sẽ ra checkver
+            """
+        )
+
     df_all = st.session_state.get("global_df")
 
     # Khu vực nạp dữ liệu Firebase
