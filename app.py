@@ -230,9 +230,9 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                     target = "ad_unit"
             elif "dinh dang" in key or "ad format" in key or "format" in key or "ad type" in key:
                 target = "ad_format"
-            elif ("thu nhap" in key or "doanh thu" in key or "estimated earnings" in key):
+            elif ("thu nhap" in key or "doanh thu" in key hoặc "estimated earnings" in key):
                 target = "estimated_earnings"
-            elif ("yeu cau da khop" in key or ("matched" in key and "request" in key)):
+            elif ("yeu cau da khop" in key hoặc ("matched" in key and "request" in key)):
                 target = "matched_requests"
             elif "yeu cau" in key or "requests" in key:
                 if not any(b in key for b in BIDDING_BLOCKERS):
@@ -313,11 +313,45 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = to_numeric_series(df[c])
     return df
 
+# -------------------- Parse dates: mạnh tay nhiều trường hợp --------------------
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
-    if "date" in df.columns:
-        df = df.copy()
-        df["date"] = pd.to_datetime(df["date"], errors="coerce", infer_datetime_format=True)
-    return df
+    if "date" not in df.columns:
+        return df
+    out = df.copy()
+    s = out["date"]
+
+    # Lần 1: parse thông thường
+    dt = pd.to_datetime(s, errors="coerce", infer_datetime_format=True)
+
+    # Lần 2: thử dayfirst (dd/MM/yyyy)
+    if dt.notna().sum() == 0:
+        dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+
+    # Lần 3: epoch giây/mili-giây hoặc Excel serial number
+    if dt.notna().sum() == 0:
+        s_num = pd.to_numeric(s, errors="coerce")
+        if s_num.notna().any():
+            vals = s_num.dropna()
+            maxv = float(vals.max())
+            medv = float(vals.median())
+            if maxv > 1e12 or medv > 1e12:
+                # mili-giây
+                dt = pd.to_datetime(s_num, unit="ms", errors="coerce")
+            elif maxv > 1e9 or medv > 1e9:
+                # giây
+                dt = pd.to_datetime(s_num, unit="s", errors="coerce")
+            else:
+                # Excel serial (tính từ 1899-12-30)
+                base = pd.Timestamp("1899-12-30")
+                try:
+                    dt_candidate = pd.to_timedelta(s_num, unit="D") + base
+                    mask_ok = (dt_candidate.dt.year >= 1990) & (dt_candidate.dt.year <= 2100)
+                    dt = dt_candidate.where(mask_ok, other=pd.NaT)
+                except Exception:
+                    pass
+
+    out["date"] = dt
+    return out
 
 def ensure_metric_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -925,7 +959,16 @@ with tabs[0]:
         st.download_button("Tải CSV kết quả", data=csv_bytes, file_name="admob_aggregated.csv", mime="text/csv")
 
         st.subheader("Biểu đồ")
-        if "date" in df.columns and df["date"].notna().any():
+        # Đếm số dòng có 'date' hợp lệ để quyết định vẽ
+        valid_dates = 0
+        if "date" in df.columns:
+            try:
+                valid_dates = pd.to_datetime(df["date"], errors="coerce").notna().sum()
+            except Exception:
+                valid_dates = df["date"].notna().sum()
+        st.caption(f"Số dòng có 'date' hợp lệ sau lọc: {int(valid_dates) if 'date' in df.columns else 0}")
+
+        if "date" in df.columns and valid_dates > 0:
             ts = aggregate(df, ["date"]).sort_values("date")
             st.plotly_chart(px.line(ts, x="date", y="estimated_earnings", title="Earnings theo ngày"), use_container_width=True)
             metric_options = ["estimated_earnings", "requests", "impressions", "rpr", "ecpm", "match_rate", "show_rate_on_matched", "ctr"]
@@ -937,6 +980,8 @@ with tabs[0]:
             ts2 = aggregate(df, dims).sort_values("date")
             title2 = f"{metric_pick} theo ngày" + (f" by {color_dim}" if color_dim else "")
             st.plotly_chart(px.line(ts2, x="date", y=metric_pick, color=color_dim, title=title2), use_container_width=True)
+        else:
+            st.info("Không vẽ được vì cột 'date' không hợp lệ hoặc sau lọc không còn dữ liệu ngày. Hãy kiểm tra tên/định dạng cột 'date' hoặc nới rộng khoảng ngày ở bộ lọc.")
 
 # =========================
 # Helpers cho Firebase (users/new users)
