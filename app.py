@@ -2,7 +2,7 @@
 import io
 import re
 import unicodedata
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ st.markdown(
     [data-testid="stDataFrame"] [role="columnheader"] * { color: #101828 !important; font-weight: 800 !important; }
     [data-testid="stDataFrame"] thead { box-shadow: 0 2px 0 rgba(0,0,0,0.06); }
 
-    /* Cho phép nội dung cell xuống dòng */
+    /* bẻ dòng trong cell */
     [data-testid="stDataFrame"] div[role="cell"] {
       white-space: normal !important;
       overflow-wrap: anywhere !important;
@@ -184,7 +184,7 @@ def read_any_table_from_name_bytes(name: str, b: bytes) -> pd.DataFrame:
             return pd.json_normalize(json.loads(b.decode("utf-8", errors="ignore")))
     return try_read_csv(b)
 
-# Reader đặc thù cho file Firebase
+# Reader đặc thù cho Firebase
 def read_firebase_csv_bytes(b: bytes) -> pd.DataFrame:
     try:
         text = b.decode("utf-8-sig", errors="ignore")
@@ -228,7 +228,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                     target = "ad_unit_id"
                 else:
                     target = "ad_unit"
-            elif "dinh dang" in key or "ad format" in key or "format" in key or "ad type" in key:
+            elif "dinh dang" in key or "ad format" in key hoặc "format" in key or "ad type" in key:
                 target = "ad_format"
             elif ("thu nhap" in key or "doanh thu" in key or "estimated earnings" in key):
                 target = "estimated_earnings"
@@ -254,7 +254,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                 target = "app"
             elif key in ("os", "platform", "nen tang"):
                 target = "platform"
-            elif "date" in key or "ngay" in key or "report" in key:
+            elif "date" in key or "ngay" in key hoặc "report" in key:
                 target = "date"
             elif "version" in key or "build" in key or "release" in key:
                 target = "version"
@@ -350,7 +350,7 @@ def ensure_metric_cols(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = 0.0
     return df
 
-# KHÔNG dùng eps: chia an toàn bằng divide(...).where(...)
+# KPI: không dùng eps
 def compute_kpis(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     req = df.get("requests", 0).astype(float)
@@ -394,7 +394,7 @@ def aggregate(df: pd.DataFrame, dims: List[str]) -> pd.DataFrame:
     return grouped.sort_values("estimated_earnings", ascending=False)
 
 # =========================
-# Loader + cache (kèm khử trùng lặp)
+# Loader + cache (khử trùng lặp)
 # =========================
 @st.cache_data(show_spinner=False)
 def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
@@ -412,13 +412,13 @@ def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
         for col in ["app", "ad_unit", "ad_format", "country", "ad_source", "platform", "currency", "version"]:
             if col in df.columns:
                 df[col] = df[col].fillna("").astype(str).str.strip()
-        df = df.drop_duplicates(ignore_index=True)  # khử trùng lặp trong từng file
+        df = df.drop_duplicates(ignore_index=True)
         frames.append(df)
     if not frames:
         return pd.DataFrame()
     df_all = pd.concat(frames, ignore_index=True)
     before = len(df_all)
-    df_all = df_all.drop_duplicates(ignore_index=True)  # khử trùng lặp giữa các file
+    df_all = df_all.drop_duplicates(ignore_index=True)
     dropped = before - len(df_all)
     df_all = compute_kpis(df_all)
     df_all.attrs["dupe_dropped"] = int(dropped)
@@ -687,10 +687,11 @@ def build_checkver_cell_colors(
     version_b: str,
     id_cols: List[str],
     shade_b_rows: bool = True,
+    allowed_keys: Optional[Set[Tuple]] = None,  # None = highlight tất cả; set = chỉ highlight các keys trong set
 ) -> list:
     """
     Ma trận màu [n_col][n_row]:
-    - Hàng Version B: nền be nhạt.
+    - Hàng Version B: nền be nhạt nếu hàng đó thuộc allowed_keys (khi template ON). Nếu không, nền trắng.
     - Ô ở hàng Version B được tô theo so sánh với A cho các cột:
       show_rate_on_request,
       req_per_user, req_per_new_user,
@@ -708,11 +709,25 @@ def build_checkver_cell_colors(
     bad = "#fb923c"
 
     ver = df_numeric["version"].astype(str).tolist()
-    cell_colors = [[(base_B if ver[r] == str(version_b) else base_A) for r in range(n_rows)] for _ in range(n_cols)]
 
-    def key_of_row(r: int):
+    # Helper lấy key và check allowed
+    def key_of_row(r: int) -> Tuple:
         return tuple(df_numeric.loc[r, c] if c in df_numeric.columns else None for c in id_cols)
 
+    allowed_row = []
+    for r in range(n_rows):
+        if allowed_keys is None:
+            allowed_row.append(True)
+        else:
+            allowed_row.append(key_of_row(r) in allowed_keys)
+
+    # Nền cơ bản
+    cell_colors = [[
+        (base_B if (ver[r] == str(version_b) and allowed_row[r]) else base_A)
+        for r in range(n_rows)
+    ] for _ in range(n_cols)]
+
+    # Lập map A/B
     idxA, idxB = {}, {}
     for r in range(n_rows):
         k = key_of_row(r)
@@ -730,6 +745,9 @@ def build_checkver_cell_colors(
 
     for k, rB in idxB.items():
         rA = idxA.get(k, None)
+        # Nếu template mode và key này không nằm trong allowed_keys thì bỏ qua
+        if allowed_keys is not None and k not in allowed_keys:
+            continue
         for col in comp_cols:
             if col not in df_numeric.columns or col not in print_cols:
                 continue
@@ -1150,15 +1168,12 @@ def apply_native_rev_rule(df: pd.DataFrame, mapping_applied: bool) -> pd.DataFra
         return df
     df = df.copy()
     prefixes = tuple(NATIVE_PREFIXES)
-
     mask_native = False
     if "ad_name" in df.columns:
         mask_native = df["ad_name"].astype(str).str.lower().str.startswith(prefixes)
     if "ad_unit" in df.columns:
         mask_native = mask_native | df["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
-
     mask_other = ~mask_native
-
     for col in ["imp_per_user", "req_per_user", "rev_per_user"]:
         if col in df.columns:
             df.loc[mask_native, col] = np.nan
@@ -1176,9 +1191,12 @@ def format_num2(x: float) -> str:
 def format_num6(x: float) -> str:
     return "—" if pd.isna(x) else f"{x:,.6f}"
 
-def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict[str, Dict[str, float]]]:
+# Phân tích nhóm: chỉ cộng 4 chỉ số per-user/new-user; còn lại liệt kê chi tiết theo từng ad unit
+def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict]:
     if agg_df is None or agg_df.empty:
         return None
+
+    item_col = "ad_name" if "ad_name" in agg_df.columns else "ad_unit"
 
     def filt(d: pd.DataFrame, ver: str) -> pd.DataFrame:
         d = d[d["version"].astype(str) == str(ver)]
@@ -1190,89 +1208,108 @@ def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: 
     A = filt(agg_df, version_a)
     B = filt(agg_df, version_b)
     if B.empty:
-        return None
+        return None  # chỉ phân tích khi B có dữ liệu
 
-    def enrich_and_summarize(d: pd.DataFrame) -> Dict[str, float]:
+    def sums_per_user(d: pd.DataFrame) -> Dict[str, float]:
         if d is None or d.empty:
-            return dict(match_rate=np.nan, show_rate=np.nan, ctr=np.nan,
-                        imp_user_sum=np.nan, imp_new_user_sum=np.nan,
-                        req_user_sum=np.nan, req_new_user_sum=np.nan,
-                        rev_user_sum=np.nan, rev_new_user_sum=np.nan)
-
-        req = pd.to_numeric(d["requests"], errors="coerce").sum()
-        mreq = pd.to_numeric(d["matched_requests"], errors="coerce").sum()
-        imp = pd.to_numeric(d["impressions"], errors="coerce").sum()
-        clk = pd.to_numeric(d["clicks"], errors="coerce").sum()
-        rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum()
-
-        match_rate = (mreq / req) if req > 0 else np.nan
-        show_rate = (imp / req) if req > 0 else np.nan
-        ctr = (clk / imp) if imp > 0 else np.nan
-
+            return dict(imp_user=np.nan, imp_new_user=np.nan, rev_user=np.nan, rev_new_user=np.nan)
         user = pd.to_numeric(d.get("user", np.nan), errors="coerce")
         new_user = pd.to_numeric(d.get("new_user", np.nan), errors="coerce")
-
-        imp_user = pd.to_numeric(d["impressions"], errors="coerce").divide(user).where(user > 0)
-        imp_new  = pd.to_numeric(d["impressions"], errors="coerce").divide(new_user).where(new_user > 0)
-
-        req_user = pd.to_numeric(d["requests"], errors="coerce").divide(user).where(user > 0)
-        req_new  = pd.to_numeric(d["requests"], errors="coerce").divide(new_user).where(new_user > 0)
-
-        rev_user = pd.to_numeric(d["estimated_earnings"], errors="coerce").divide(user).where(user > 0)
-        rev_new  = pd.to_numeric(d["estimated_earnings"], errors="coerce").divide(new_user).where(new_user > 0)
-
-        out = dict(
-            match_rate=match_rate,
-            show_rate=show_rate,
-            ctr=ctr,
-            imp_user_sum=np.nansum(imp_user),
-            imp_new_user_sum=np.nansum(imp_new),
-            req_user_sum=np.nansum(req_user),
-            req_new_user_sum=np.nansum(req_new),
-            rev_user_sum=np.nansum(rev_user),
-            rev_new_user_sum=np.nansum(rev_new),
+        imp = pd.to_numeric(d.get("impressions", np.nan), errors="coerce")
+        rev = pd.to_numeric(d.get("estimated_earnings", np.nan), errors="coerce")
+        imp_user = imp.divide(user).where(user > 0)
+        imp_new_user = imp.divide(new_user).where(new_user > 0)
+        rev_user = rev.divide(user).where(user > 0)
+        rev_new_user = rev.divide(new_user).where(new_user > 0)
+        return dict(
+            imp_user=np.nansum(imp_user),
+            imp_new_user=np.nansum(imp_new_user),
+            rev_user=np.nansum(rev_user),
+            rev_new_user=np.nansum(rev_new_user),
         )
+
+    def per_item_showrate_requests(d: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+        if d is None or d.empty:
+            return {}
+        g = d.groupby(item_col, dropna=False)[["requests", "impressions"]].sum(min_count=1).reset_index()
+        g["show_rate"] = g["impressions"].divide(g["requests"]).where(g["requests"] > 0)
+        out = {}
+        for _, r in g.iterrows():
+            name = str(r[item_col])
+            out[name] = dict(
+                requests=float(r.get("requests", np.nan)),
+                show_rate=float(r.get("show_rate", np.nan)),
+            )
         return out
 
-    return {"A": enrich_and_summarize(A), "B": enrich_and_summarize(B)}
+    data = {
+        "A": {
+            "sums": sums_per_user(A),
+            "by_item": per_item_showrate_requests(A),
+        },
+        "B": {
+            "sums": sums_per_user(B),
+            "by_item": per_item_showrate_requests(B),
+        },
+        "item_col": item_col,
+    }
+    return data
 
-def analysis_to_text(prefix: str, label: str, data: Dict[str, Dict[str, float]], version_a: str, version_b: str) -> List[str]:
-    out = []
+def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, version_b: str):
     A = data["A"]; B = data["B"]
-    native = prefix.startswith("native_")
-
-    pairs = [
-        ("match rate", "match_rate", "pct"),
-        ("show rate", "show_rate", "pct"),
-        ("CTR", "ctr", "pct"),
+    sums_pairs = [
+        ("imp/user", A["sums"].get("imp_user"), B["sums"].get("imp_user"), "num2"),
+        ("imp/new user", A["sums"].get("imp_new_user"), B["sums"].get("imp_new_user"), "num2"),
+        ("rev/user", A["sums"].get("rev_user"), B["sums"].get("rev_user"), "num6"),
+        ("rev/new user", A["sums"].get("rev_new_user"), B["sums"].get("rev_new_user"), "num6"),
     ]
-    if native:
-        pairs += [
-            ("imp/new user", "imp_new_user_sum", "num2"),
-            ("request/new user", "req_new_user_sum", "num2"),
-            ("rev/new user", "rev_new_user_sum", "num6"),
-        ]
-    else:
-        pairs += [
-            ("imp/user", "imp_user_sum", "num2"),
-            ("request/user", "req_user_sum", "num2"),
-            ("rev/user", "rev_user_sum", "num6"),
-        ]
-
     def fmt(v, kind):
-        if kind == "pct":   return format_pct(v)
-        if kind == "num2":  return format_num2(v)
-        if kind == "num6":  return format_num6(v)
+        if kind == "num2": return format_num2(v)
+        if kind == "num6": return format_num6(v)
+        if kind == "pct":  return format_pct(v)
         return str(v)
 
-    for title, key, kind in pairs:
-        va = A.get(key, np.nan)
-        vb = B.get(key, np.nan)
-        if pd.isna(vb) and pd.isna(va):
+    st.markdown(f"• Nhóm: {label} (prefix: {prefix})")
+
+    # In 4 chỉ số tổng theo rule
+    for title, va, vb, kind in sums_pairs:
+        if pd.isna(va) and pd.isna(vb):
             continue
-        trend = "tốt hơn" if (pd.notna(vb) and pd.notna(va) and vb > va) else ("kém hơn" if (pd.notna(vb) and pd.notna(va) and vb < va) else "bằng")
-        out.append(f"- {label}: {title} {version_b} = {fmt(vb, kind)}, {trend} {version_a} = {fmt(va, kind)}.")
-    return out
+        if pd.notna(vb) and pd.notna(va):
+            trend = "tốt hơn" if vb > va else ("kém hơn" if vb < va else "bằng")
+        elif pd.notna(vb) and pd.isna(va):
+            trend = "tốt hơn"
+        elif pd.isna(vb) and pd.notna(va):
+            trend = "kém hơn"
+        else:
+            trend = "bằng"
+        st.write(f"- {title}: {version_a} = {fmt(va, kind)} → {version_b} = {fmt(vb, kind)} ({trend}).")
+
+    # Liệt kê chi tiết showrate theo từng ad unit khớp tiền tố (kèm Requests A/B)
+    names = sorted(set(B["by_item"].keys()) | set(A["by_item"].keys()))
+    if names:
+        st.write("- Chi tiết show rate theo từng ad unit:")
+        for name in names:
+            srA = A["by_item"].get(name, {}).get("show_rate", np.nan)
+            rqA = A["by_item"].get(name, {}).get("requests", np.nan)
+            srB = B["by_item"].get(name, {}).get("show_rate", np.nan)
+            rqB = B["by_item"].get(name, {}).get("requests", np.nan)
+            if pd.notna(srB) and pd.notna(srA):
+                trend = "tốt hơn" if srB > srA else ("kém hơn" if srB < srA else "bằng")
+            elif pd.notna(srB) and pd.isna(srA):
+                trend = "tốt hơn"
+            elif pd.isna(srB) and pd.notna(srA):
+                trend = "kém hơn"
+            else:
+                trend = "bằng"
+            st.write(
+                f"  • {name} {version_a} showrate {format_pct(srA)} (req {int(rqA) if pd.notna(rqA) else '—'}) "
+                f"{'<' if trend=='kém hơn' else ('>' if trend=='tốt hơn' else '=')} "
+                f"{version_b} {format_pct(srB)} (req {int(rqB) if pd.notna(rqB) else '—'}) — {trend}."
+            )
+
+    # Divider giữa các nhóm
+    st.divider()
 
 with tabs[1]:
     st.subheader("Checkver — So sánh 2 version (1 tệp)")
@@ -1280,11 +1317,11 @@ with tabs[1]:
     with st.expander("Hướng dẫn", expanded=True):
         st.markdown(
             """
-- B1: Upload file CSV Admob lên, CVS này có thể dùng chung với Manual Floor Log
-- B2: Upload file CSV từ Firebase Analytics phần Version. Upload xong nhấn nạp firebase 
-- B3: Phần bộ lọc phía bên trái nếu chưa mapping thì phải thêm mapping ads name vào không là lỗi, không ra đâu
-- B4: Chọn version. Version A là ver cũ, Version B là ver mới
-- B5: Ở cuối cùng có nút Checkver. Ấn vào sẽ ra checkver
+- B1: Upload file CSV Admob lên, CSV này có thể dùng chung với Manual Floor Log
+- B2: Upload file CSV từ Firebase Analytics phần Version rồi nhấn Nạp Firebase
+- B3: Bật mapping nếu muốn hiển thị theo ad name
+- B4: Chọn Version A (cũ) và Version B (mới). Bật “Checkver template” nếu chỉ muốn highlight những nhóm trong danh mục phân tích.
+- B5: Nhấn “Phân tích checkver” để xem phần phân tích chi tiết từng nhóm.
             """
         )
 
@@ -1388,6 +1425,7 @@ with tabs[1]:
             search = st.session_state["checkver_search"].strip().lower()
 
             shade_b = st.checkbox("Tô màu Version B", value=True)
+            template_mode = st.checkbox("Checkver template (chỉ highlight các nhóm phân tích)", value=False)
 
             if view.startswith("Common"):
                 df_view = agg[agg["ad_unit"].isin(common_keys) & agg["version"].isin([version_a, version_b])].copy()
@@ -1426,7 +1464,7 @@ with tabs[1]:
                 if c not in df_view.columns:
                     df_view[c] = np.nan
 
-            # Per-user/new-user: không dùng eps
+            # Per-user/new-user
             user = pd.to_numeric(df_view["user"], errors="coerce")
             new_user = pd.to_numeric(df_view["new_user"], errors="coerce")
             df_view["imp_per_user"]     = df_view["impressions"].astype(float).divide(user).where(user > 0)
@@ -1436,7 +1474,7 @@ with tabs[1]:
             df_view["req_per_user"]     = df_view["requests"].astype(float).divide(user).where(user > 0)
             df_view["req_per_new_user"] = df_view["requests"].astype(float).divide(new_user).where(new_user > 0)
 
-            # Áp rule native/non-native
+            # Áp rule native/non-native khi đã mapping
             df_view = apply_native_rev_rule(df_view, mapping_applied=bool(st.session_state.get("ad_mapping_applied")))
 
             ordered_cols = [
@@ -1460,12 +1498,32 @@ with tabs[1]:
             if show_stt:
                 df_print.insert(0, "STT", np.arange(1, len(df_print) + 1))
 
+            # Allowed keys cho template
+            allowed_keys = None
+            if template_mode:
+                prefixes = tuple(p[0] for p in ANALYZE_GROUPS)
+                # chọn các hàng có ad_unit/ad_name bắt đầu bằng 1 trong các prefix
+                mask_pref = df_view["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
+                if "ad_name" in df_view.columns:
+                    mask_pref = mask_pref | df_view["ad_name"].astype(str).str.lower().str.startswith(prefixes)
+                id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns]
+                if not id_cols:
+                    id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
+                if not id_cols:
+                    id_cols = ["ad_unit"] if "ad_unit" in df_view.columns else ["ad_name"]
+                allowed_keys = set(tuple(row[c] if c in df_view.columns else None for c in id_cols)
+                                   for _, row in df_view[mask_pref].iterrows())
+            else:
+                id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns]
+                if not id_cols:
+                    id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
+                if not id_cols:
+                    id_cols = ["ad_unit"] if "ad_unit" in df_view.columns else ["ad_name"]
+
             # Hiển thị bảng với highlight từng ô
-            id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns]
-            if not id_cols:
-                id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
-            if not id_cols:
-                id_cols = ["ad_unit"] if "ad_unit" in df_view.columns else ["ad_name"]
+            if not template_mode:
+                # id_cols đã được set ở trên
+                pass
             print_cols = list(df_print.columns)
             cell_colors = build_checkver_cell_colors(
                 df_numeric=df_view.reset_index(drop=True),
@@ -1474,6 +1532,7 @@ with tabs[1]:
                 version_b=version_b,
                 id_cols=id_cols,
                 shade_b_rows=bool(shade_b),
+                allowed_keys=allowed_keys,
             )
             render_table(df_print, table_height, cell_colors=cell_colors)
 
@@ -1486,7 +1545,7 @@ with tabs[1]:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # Phân tích checkver
+            # ---------- PHÂN TÍCH CHECKVER ----------
             st.markdown("---")
             st.subheader("Phân tích checkver")
             if st.button("Phân tích checkver", type="primary"):
@@ -1505,17 +1564,13 @@ with tabs[1]:
                 if "ad_unit" not in base.columns and "ad_name" in base.columns:
                     base["ad_unit"] = base["ad_name"]
 
-                results_any = False
+                any_res = False
                 for prefix, label in ANALYZE_GROUPS:
                     data = analyze_group(base, prefix, version_a, version_b)
                     if data is None:
                         continue
-                    results_any = True
-                    lines = analysis_to_text(prefix, label, data, version_a, version_b)
-                    if lines:
-                        st.markdown(f"- Nhóm: {label} (prefix: {prefix})")
-                        for ln in lines:
-                            st.write(ln)
-                        st.write("")
-                if not results_any:
+                    any_res = True
+                    analysis_to_text(prefix, label, data, version_a, version_b)
+
+                if not any_res:
                     st.info("Version B không có ads thuộc các nhóm trong danh sách phân tích.")
