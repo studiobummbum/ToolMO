@@ -121,7 +121,6 @@ NATIVE_PREFIXES = [
     "native_permission",
 ]
 
-# Nhóm phân tích checkver
 ANALYZE_GROUPS = [
     ("inter_splash", "Interstitial Splash"),
     ("appopen_splash", "AppOpen Splash"),
@@ -183,7 +182,7 @@ def read_any_table_from_name_bytes(name: str, b: bytes) -> pd.DataFrame:
             return pd.json_normalize(json.loads(b.decode("utf-8", errors="ignore")))
     return try_read_csv(b)
 
-# Reader đặc thù cho Firebase CSV có phần mô tả đầu file
+# Reader đặc thù cho file Firebase
 def read_firebase_csv_bytes(b: bytes) -> pd.DataFrame:
     try:
         text = b.decode("utf-8-sig", errors="ignore")
@@ -279,7 +278,7 @@ def to_numeric_series(s: pd.Series) -> pd.Series:
     x = x.str.replace("%", "", regex=False)
 
     def parse_one(val: str) -> float:
-        if val == "" or val == "-" or val == "--":
+        if val in ("", "-", "--"):
             return np.nan
         if THOUSANDS_RE.match(val):
             return float(val.replace(",", "").replace(".", ""))
@@ -312,13 +311,12 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = to_numeric_series(df[c])
     return df
 
-# -------------------- Parse dates: nhiều trường hợp --------------------
+# -------------------- Parse dates --------------------
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in df.columns:
         return df
     out = df.copy()
     s = out["date"]
-
     dt = pd.to_datetime(s, errors="coerce", infer_datetime_format=True)
     if dt.notna().sum() == 0:
         dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
@@ -393,7 +391,7 @@ def aggregate(df: pd.DataFrame, dims: List[str]) -> pd.DataFrame:
     return grouped.sort_values("estimated_earnings", ascending=False)
 
 # =========================
-# Loader + cache
+# Loader + cache (kèm khử trùng lặp)
 # =========================
 @st.cache_data(show_spinner=False)
 def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
@@ -403,7 +401,7 @@ def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
         if raw is None or raw.empty:
             continue
         raw = raw.loc[:, ~raw.columns.astype(str).str.fullmatch(r"\s*")]
-        raw = raw.dropna(axis=1, how="all")
+        raw = raw.dropna(axis=1, how="all").dropna(how="all")
         df = normalize_columns(raw)
         df = coerce_numeric(df)
         df = parse_dates(df)
@@ -411,11 +409,19 @@ def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
         for col in ["app", "ad_unit", "ad_format", "country", "ad_source", "platform", "currency", "version"]:
             if col in df.columns:
                 df[col] = df[col].fillna("").astype(str).str.strip()
+        # Xoá bản ghi trùng hệt nhau trong từng file
+        df = df.drop_duplicates(ignore_index=True)
         frames.append(df)
     if not frames:
         return pd.DataFrame()
     df_all = pd.concat(frames, ignore_index=True)
+    before = len(df_all)
+    # Khử trùng lặp giữa các file (đúng từng ô)
+    df_all = df_all.drop_duplicates(ignore_index=True)
+    dropped = before - len(df_all)
     df_all = compute_kpis(df_all)
+    # Ghi chú số dòng đã loại để hiển thị ngoài UI
+    df_all.attrs["dupe_dropped"] = int(dropped)
     return df_all
 
 # ================
@@ -631,11 +637,6 @@ def render_table(
     highlight_b: bool = False,
     version_b: Optional[str] = None,
 ):
-    """
-    - Nếu cell_colors is None: dùng st.dataframe (không highlight từng ô).
-    - Nếu có cell_colors: dùng Plotly Table để đổ màu từng ô.
-      cell_colors là ma trận [n_col][n_row] theo đúng thứ tự df_print.columns.
-    """
     if cell_colors is None:
         col_cfg = build_column_config(list(df_print.columns))
         st.dataframe(df_print, use_container_width=True, hide_index=True, column_config=col_cfg, height=height)
@@ -688,18 +689,15 @@ def build_checkver_cell_colors(
     shade_b_rows: bool = True,
 ) -> list:
     """
-    Trả về ma trận màu [n_col][n_row] cho df_numeric theo các cột print_cols.
-    - Hàng Version B: nền be nhạt (nếu shade_b_rows=True).
-    - Các ô ở hàng Version B tại các cột:
-        show_rate_on_request, requests,
-        req_per_user, req_per_new_user,
-        imp_per_user, imp_per_new_user,
-        rev_per_user, rev_per_new_user
-      được tô:
-        + Xanh lá (#22c55e) nếu B > A
-        + Cam (#fb923c) nếu B < A
-      Nếu A không có giá trị: coi B>0 là tốt (xanh), B<=0 không tô.
-      Cột nào NaN do rule native/non-native thì không tô.
+    Ma trận màu [n_col][n_row]:
+    - Hàng Version B: nền be nhạt.
+    - Ô ở hàng Version B được tô theo so sánh với A cho các cột:
+      show_rate_on_request,
+      req_per_user, req_per_new_user,
+      imp_per_user, imp_per_new_user,
+      rev_per_user, rev_per_new_user
+    - Xanh lá: B > A; Cam: B < A; A trống → B>0 coi là tốt.
+    - KHÔNG highlight cột Requests theo yêu cầu.
     """
     n_rows = len(df_numeric)
     n_cols = len(print_cols)
@@ -725,7 +723,6 @@ def build_checkver_cell_colors(
 
     comp_cols = [
         "show_rate_on_request",
-        "requests",
         "req_per_user", "req_per_new_user",
         "imp_per_user", "imp_per_new_user",
         "rev_per_user", "rev_per_new_user",
@@ -844,6 +841,9 @@ with st.expander("Nguồn dữ liệu (dùng chung)", expanded=True):
         else:
             st.session_state["global_df_base"] = df_base
             st.success(f"Nạp {len(df_base):,} dòng dữ liệu.")
+            dropped = int(df_base.attrs.get("dupe_dropped", 0))
+            if dropped > 0:
+                st.info(f"Đã khử trùng lặp {dropped:,} dòng giống hệt nhau giữa các file upload để tránh cộng trùng số liệu.")
 
 # Sidebar: Clear cache
 with st.sidebar:
@@ -896,7 +896,7 @@ if isinstance(st.session_state.get("global_df_base"), pd.DataFrame) and not st.s
 else:
     df_work = None
 
-# Sidebar: GLOBAL filters
+# Sidebar: GLOBAL filters (áp lên df_work)
 def apply_global_filters(dframe: pd.DataFrame) -> pd.DataFrame:
     if dframe is None or dframe.empty:
         return dframe
@@ -937,7 +937,7 @@ if df_work is not None:
 else:
     st.session_state["global_df"] = None
 
-# Sidebar: kích thước
+# Sidebar: kích thước bảng chung
 with st.sidebar.expander("Kích thước bảng", expanded=False):
     max_width = st.slider("Độ rộng tối đa trang (px)", min_value=1200, max_value=2200, value=1700, step=50)
     table_height = st.slider("Chiều cao bảng (px)", min_value=400, max_value=1200, value=800, step=20)
@@ -1118,7 +1118,7 @@ def load_firebase_df(uploaded_files) -> Optional[pd.DataFrame]:
     return agg
 
 # =========================
-# TAB 2: Checkver
+# TAB 2: Checkver — So sánh phiên bản và chỉ số Firebase
 # =========================
 def detect_version_col(df: pd.DataFrame) -> Optional[str]:
     cands = []
@@ -1150,12 +1150,15 @@ def apply_native_rev_rule(df: pd.DataFrame, mapping_applied: bool) -> pd.DataFra
         return df
     df = df.copy()
     prefixes = tuple(NATIVE_PREFIXES)
+
     mask_native = False
     if "ad_name" in df.columns:
         mask_native = df["ad_name"].astype(str).str.lower().str.startswith(prefixes)
     if "ad_unit" in df.columns:
         mask_native = mask_native | df["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
+
     mask_other = ~mask_native
+
     for col in ["imp_per_user", "req_per_user", "rev_per_user"]:
         if col in df.columns:
             df.loc[mask_native, col] = np.nan
@@ -1176,39 +1179,49 @@ def format_num6(x: float) -> str:
 def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict[str, Dict[str, float]]]:
     if agg_df is None or agg_df.empty:
         return None
+
     def filt(d: pd.DataFrame, ver: str) -> pd.DataFrame:
         d = d[d["version"].astype(str) == str(ver)]
         mask = d["ad_unit"].astype(str).str.lower().str.startswith(prefix)
         if "ad_name" in d.columns:
             mask = mask | d["ad_name"].astype(str).str.lower().str.startswith(prefix)
         return d[mask].copy()
+
     A = filt(agg_df, version_a)
     B = filt(agg_df, version_b)
     if B.empty:
         return None
+
     def enrich_and_summarize(d: pd.DataFrame) -> Dict[str, float]:
         if d is None or d.empty:
             return dict(match_rate=np.nan, show_rate=np.nan, ctr=np.nan,
                         imp_user_sum=np.nan, imp_new_user_sum=np.nan,
                         req_user_sum=np.nan, req_new_user_sum=np.nan,
                         rev_user_sum=np.nan, rev_new_user_sum=np.nan)
+
         req = pd.to_numeric(d["requests"], errors="coerce").sum()
         mreq = pd.to_numeric(d["matched_requests"], errors="coerce").sum()
         imp = pd.to_numeric(d["impressions"], errors="coerce").sum()
         clk = pd.to_numeric(d["clicks"], errors="coerce").sum()
         rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum()
+
         eps = 1e-12
         match_rate = (mreq / (req + eps)) if req > 0 else np.nan
         show_rate = (imp / (req + eps)) if req > 0 else np.nan
         ctr = (clk / (imp + eps)) if imp > 0 else np.nan
+
         user = pd.to_numeric(d.get("user", np.nan), errors="coerce")
         new_user = pd.to_numeric(d.get("new_user", np.nan), errors="coerce")
+
         imp_user = np.where((user > 0), pd.to_numeric(d["impressions"], errors="coerce") / (user + eps), np.nan)
         imp_new = np.where((new_user > 0), pd.to_numeric(d["impressions"], errors="coerce") / (new_user + eps), np.nan)
+
         req_user = np.where((user > 0), pd.to_numeric(d["requests"], errors="coerce") / (user + eps), np.nan)
         req_new = np.where((new_user > 0), pd.to_numeric(d["requests"], errors="coerce") / (new_user + eps), np.nan)
+
         rev_user = np.where((user > 0), pd.to_numeric(d["estimated_earnings"], errors="coerce") / (user + eps), np.nan)
         rev_new = np.where((new_user > 0), pd.to_numeric(d["estimated_earnings"], errors="coerce") / (new_user + eps), np.nan)
+
         out = dict(
             match_rate=match_rate,
             show_rate=show_rate,
@@ -1221,12 +1234,14 @@ def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: 
             rev_new_user_sum=np.nansum(rev_new),
         )
         return out
+
     return {"A": enrich_and_summarize(A), "B": enrich_and_summarize(B)}
 
 def analysis_to_text(prefix: str, label: str, data: Dict[str, Dict[str, float]], version_a: str, version_b: str) -> List[str]:
     out = []
     A = data["A"]; B = data["B"]
     native = prefix.startswith("native_")
+
     pairs = [
         ("match rate", "match_rate", "pct"),
         ("show rate", "show_rate", "pct"),
@@ -1244,11 +1259,13 @@ def analysis_to_text(prefix: str, label: str, data: Dict[str, Dict[str, float]],
             ("request/user", "req_user_sum", "num2"),
             ("rev/user", "rev_user_sum", "num6"),
         ]
+
     def fmt(v, kind):
         if kind == "pct":   return format_pct(v)
         if kind == "num2":  return format_num2(v)
         if kind == "num6":  return format_num6(v)
         return str(v)
+
     for title, key, kind in pairs:
         va = A.get(key, np.nan)
         vb = B.get(key, np.nan)
@@ -1297,6 +1314,7 @@ with tabs[1]:
             key_col_auto = "ad_name"
         else:
             key_col_auto = df_all.columns[0]
+
         ver_col = ver_col_auto
         key_col = key_col_auto
 
@@ -1472,6 +1490,7 @@ with tabs[1]:
             st.subheader("Phân tích checkver")
             if st.button("Phân tích checkver", type="primary"):
                 st.write(f"So sánh {version_b} vs {version_a} theo danh mục: {', '.join([g[0] for g in ANALYZE_GROUPS])}")
+
                 base = agg.copy()
                 fb_df2 = st.session_state.get("firebase_df")
                 if isinstance(fb_df2, pd.DataFrame) and not fb_df2.empty:
@@ -1481,6 +1500,7 @@ with tabs[1]:
                 else:
                     if "user" not in base.columns: base["user"] = np.nan
                     if "new_user" not in base.columns: base["new_user"] = np.nan
+
                 if "ad_unit" not in base.columns and "ad_name" in base.columns:
                     base["ad_unit"] = base["ad_name"]
 
