@@ -34,6 +34,7 @@ st.markdown(
     [data-testid="stDataFrame"] [role="columnheader"] * { color: #101828 !important; font-weight: 800 !important; }
     [data-testid="stDataFrame"] thead { box-shadow: 0 2px 0 rgba(0,0,0,0.06); }
 
+    /* Cho phép nội dung cell xuống dòng */
     [data-testid="stDataFrame"] div[role="cell"] {
       white-space: normal !important;
       overflow-wrap: anywhere !important;
@@ -121,6 +122,7 @@ NATIVE_PREFIXES = [
     "native_permission",
 ]
 
+# Nhóm phân tích checkver
 ANALYZE_GROUPS = [
     ("inter_splash", "Interstitial Splash"),
     ("appopen_splash", "AppOpen Splash"),
@@ -348,21 +350,22 @@ def ensure_metric_cols(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = 0.0
     return df
 
+# KHÔNG dùng eps: chia an toàn bằng divide(...).where(...)
 def compute_kpis(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    eps = 1e-12
     req = df.get("requests", 0).astype(float)
     mreq = df.get("matched_requests", 0).astype(float)
     imp = df.get("impressions", 0).astype(float)
     clk = df.get("clicks", 0).astype(float)
     rev = df.get("estimated_earnings", 0.0).astype(float)
-    df["match_rate"] = np.where(req > 0, mreq / (req + eps), np.nan)
-    df["show_rate_on_matched"] = np.where(mreq > 0, imp / (mreq + eps), np.nan)
-    df["show_rate_on_request"] = np.where(req > 0, imp / (req + eps), np.nan)
-    df["rpr"] = np.where(req > 0, rev / (req + eps), np.nan)
+
+    df["match_rate"] = mreq.divide(req).where(req > 0)
+    df["show_rate_on_matched"] = imp.divide(mreq).where(mreq > 0)
+    df["show_rate_on_request"] = imp.divide(req).where(req > 0)
+    df["rpr"] = rev.divide(req).where(req > 0)
     df["rpm_1000req"] = df["rpr"] * 1000.0
-    df["ecpm"] = np.where(imp > 0, (rev / (imp + eps)) * 1000.0, np.nan)
-    df["ctr"] = np.where(imp > 0, clk / (imp + eps), np.nan)
+    df["ecpm"] = (rev.divide(imp).where(imp > 0)) * 1000.0
+    df["ctr"] = clk.divide(imp).where(imp > 0)
     return df
 
 def aggregate(df: pd.DataFrame, dims: List[str]) -> pd.DataFrame:
@@ -409,18 +412,15 @@ def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
         for col in ["app", "ad_unit", "ad_format", "country", "ad_source", "platform", "currency", "version"]:
             if col in df.columns:
                 df[col] = df[col].fillna("").astype(str).str.strip()
-        # Xoá bản ghi trùng hệt nhau trong từng file
-        df = df.drop_duplicates(ignore_index=True)
+        df = df.drop_duplicates(ignore_index=True)  # khử trùng lặp trong từng file
         frames.append(df)
     if not frames:
         return pd.DataFrame()
     df_all = pd.concat(frames, ignore_index=True)
     before = len(df_all)
-    # Khử trùng lặp giữa các file (đúng từng ô)
-    df_all = df_all.drop_duplicates(ignore_index=True)
+    df_all = df_all.drop_duplicates(ignore_index=True)  # khử trùng lặp giữa các file
     dropped = before - len(df_all)
     df_all = compute_kpis(df_all)
-    # Ghi chú số dòng đã loại để hiển thị ngoài UI
     df_all.attrs["dupe_dropped"] = int(dropped)
     return df_all
 
@@ -697,7 +697,7 @@ def build_checkver_cell_colors(
       imp_per_user, imp_per_new_user,
       rev_per_user, rev_per_new_user
     - Xanh lá: B > A; Cam: B < A; A trống → B>0 coi là tốt.
-    - KHÔNG highlight cột Requests theo yêu cầu.
+    - KHÔNG highlight cột Requests.
     """
     n_rows = len(df_numeric)
     n_cols = len(print_cols)
@@ -896,7 +896,7 @@ if isinstance(st.session_state.get("global_df_base"), pd.DataFrame) and not st.s
 else:
     df_work = None
 
-# Sidebar: GLOBAL filters (áp lên df_work)
+# Sidebar: GLOBAL filters
 def apply_global_filters(dframe: pd.DataFrame) -> pd.DataFrame:
     if dframe is None or dframe.empty:
         return dframe
@@ -937,7 +937,7 @@ if df_work is not None:
 else:
     st.session_state["global_df"] = None
 
-# Sidebar: kích thước bảng chung
+# Sidebar: kích thước
 with st.sidebar.expander("Kích thước bảng", expanded=False):
     max_width = st.slider("Độ rộng tối đa trang (px)", min_value=1200, max_value=2200, value=1700, step=50)
     table_height = st.slider("Chiều cao bảng (px)", min_value=400, max_value=1200, value=800, step=20)
@@ -1205,22 +1205,21 @@ def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: 
         clk = pd.to_numeric(d["clicks"], errors="coerce").sum()
         rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum()
 
-        eps = 1e-12
-        match_rate = (mreq / (req + eps)) if req > 0 else np.nan
-        show_rate = (imp / (req + eps)) if req > 0 else np.nan
-        ctr = (clk / (imp + eps)) if imp > 0 else np.nan
+        match_rate = (mreq / req) if req > 0 else np.nan
+        show_rate = (imp / req) if req > 0 else np.nan
+        ctr = (clk / imp) if imp > 0 else np.nan
 
         user = pd.to_numeric(d.get("user", np.nan), errors="coerce")
         new_user = pd.to_numeric(d.get("new_user", np.nan), errors="coerce")
 
-        imp_user = np.where((user > 0), pd.to_numeric(d["impressions"], errors="coerce") / (user + eps), np.nan)
-        imp_new = np.where((new_user > 0), pd.to_numeric(d["impressions"], errors="coerce") / (new_user + eps), np.nan)
+        imp_user = pd.to_numeric(d["impressions"], errors="coerce").divide(user).where(user > 0)
+        imp_new  = pd.to_numeric(d["impressions"], errors="coerce").divide(new_user).where(new_user > 0)
 
-        req_user = np.where((user > 0), pd.to_numeric(d["requests"], errors="coerce") / (user + eps), np.nan)
-        req_new = np.where((new_user > 0), pd.to_numeric(d["requests"], errors="coerce") / (new_user + eps), np.nan)
+        req_user = pd.to_numeric(d["requests"], errors="coerce").divide(user).where(user > 0)
+        req_new  = pd.to_numeric(d["requests"], errors="coerce").divide(new_user).where(new_user > 0)
 
-        rev_user = np.where((user > 0), pd.to_numeric(d["estimated_earnings"], errors="coerce") / (user + eps), np.nan)
-        rev_new = np.where((new_user > 0), pd.to_numeric(d["estimated_earnings"], errors="coerce") / (new_user + eps), np.nan)
+        rev_user = pd.to_numeric(d["estimated_earnings"], errors="coerce").divide(user).where(user > 0)
+        rev_new  = pd.to_numeric(d["estimated_earnings"], errors="coerce").divide(new_user).where(new_user > 0)
 
         out = dict(
             match_rate=match_rate,
@@ -1417,6 +1416,7 @@ with tabs[1]:
             sort_cols = [c for c in ["app"] if c in df_view.columns] + ["_sort_name", "_ver_tuple"]
             df_view = df_view.sort_values(sort_cols, kind="stable").drop(columns=["_sort_name", "_ver_tuple"])
 
+            # Merge Firebase
             fb_df: Optional[pd.DataFrame] = st.session_state.get("firebase_df")
             if isinstance(fb_df, pd.DataFrame) and not fb_df.empty:
                 join_keys = [k for k in ["app", "version"] if k in df_view.columns and k in fb_df.columns]
@@ -1426,16 +1426,17 @@ with tabs[1]:
                 if c not in df_view.columns:
                     df_view[c] = np.nan
 
+            # Per-user/new-user: không dùng eps
             user = pd.to_numeric(df_view["user"], errors="coerce")
             new_user = pd.to_numeric(df_view["new_user"], errors="coerce")
-            eps = 1e-12
-            df_view["imp_per_user"] = np.where(user > 0, df_view["impressions"].astype(float) / (user + eps), np.nan)
-            df_view["imp_per_new_user"] = np.where(new_user > 0, df_view["impressions"].astype(float) / (new_user + eps), np.nan)
-            df_view["rev_per_user"] = np.where(user > 0, df_view["estimated_earnings"].astype(float) / (user + eps), np.nan)
-            df_view["rev_per_new_user"] = np.where(new_user > 0, df_view["estimated_earnings"].astype(float) / (new_user + eps), np.nan)
-            df_view["req_per_user"] = np.where(user > 0, df_view["requests"].astype(float) / (user + eps), np.nan)
-            df_view["req_per_new_user"] = np.where(new_user > 0, df_view["requests"].astype(float) / (new_user + eps), np.nan)
+            df_view["imp_per_user"]     = df_view["impressions"].astype(float).divide(user).where(user > 0)
+            df_view["imp_per_new_user"] = df_view["impressions"].astype(float).divide(new_user).where(new_user > 0)
+            df_view["rev_per_user"]     = df_view["estimated_earnings"].astype(float).divide(user).where(user > 0)
+            df_view["rev_per_new_user"] = df_view["estimated_earnings"].astype(float).divide(new_user).where(new_user > 0)
+            df_view["req_per_user"]     = df_view["requests"].astype(float).divide(user).where(user > 0)
+            df_view["req_per_new_user"] = df_view["requests"].astype(float).divide(new_user).where(new_user > 0)
 
+            # Áp rule native/non-native
             df_view = apply_native_rev_rule(df_view, mapping_applied=bool(st.session_state.get("ad_mapping_applied")))
 
             ordered_cols = [
@@ -1459,7 +1460,7 @@ with tabs[1]:
             if show_stt:
                 df_print.insert(0, "STT", np.arange(1, len(df_print) + 1))
 
-            # ---------- Hiển thị bảng với highlight từng ô ----------
+            # Hiển thị bảng với highlight từng ô
             id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns]
             if not id_cols:
                 id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
@@ -1476,7 +1477,7 @@ with tabs[1]:
             )
             render_table(df_print, table_height, cell_colors=cell_colors)
 
-            # ---------- Export ----------
+            # Export
             xls = to_excel_bytes({"Checkver": df_view[ordered_cols]})
             st.download_button(
                 "Tải Excel (theo bảng hiện tại)",
@@ -1485,7 +1486,7 @@ with tabs[1]:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # ---------- PHÂN TÍCH CHECKVER ----------
+            # Phân tích checkver
             st.markdown("---")
             st.subheader("Phân tích checkver")
             if st.button("Phân tích checkver", type="primary"):
