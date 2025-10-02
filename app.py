@@ -34,7 +34,6 @@ st.markdown(
     [data-testid="stDataFrame"] [role="columnheader"] * { color: #101828 !important; font-weight: 800 !important; }
     [data-testid="stDataFrame"] thead { box-shadow: 0 2px 0 rgba(0,0,0,0.06); }
 
-    /* Cho phép nội dung cell xuống dòng và bẻ từ để không bị che */
     [data-testid="stDataFrame"] div[role="cell"] {
       white-space: normal !important;
       overflow-wrap: anywhere !important;
@@ -122,7 +121,7 @@ NATIVE_PREFIXES = [
     "native_permission",
 ]
 
-# Nhóm phân tích checkver (bao gồm mọi biến thể bắt đầu cùng tiền tố)
+# Nhóm phân tích checkver
 ANALYZE_GROUPS = [
     ("inter_splash", "Interstitial Splash"),
     ("appopen_splash", "AppOpen Splash"),
@@ -184,7 +183,7 @@ def read_any_table_from_name_bytes(name: str, b: bytes) -> pd.DataFrame:
             return pd.json_normalize(json.loads(b.decode("utf-8", errors="ignore")))
     return try_read_csv(b)
 
-# Reader đặc thù cho file Firebase có phần mô tả đầu file
+# Reader đặc thù cho Firebase CSV có phần mô tả đầu file
 def read_firebase_csv_bytes(b: bytes) -> pd.DataFrame:
     try:
         text = b.decode("utf-8-sig", errors="ignore")
@@ -313,21 +312,16 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = to_numeric_series(df[c])
     return df
 
-# -------------------- Parse dates: mạnh tay nhiều trường hợp --------------------
+# -------------------- Parse dates: nhiều trường hợp --------------------
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in df.columns:
         return df
     out = df.copy()
     s = out["date"]
 
-    # Lần 1: parse thông thường
     dt = pd.to_datetime(s, errors="coerce", infer_datetime_format=True)
-
-    # Lần 2: thử dayfirst (dd/MM/yyyy)
     if dt.notna().sum() == 0:
         dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
-
-    # Lần 3: epoch giây/mili-giây hoặc Excel serial number
     if dt.notna().sum() == 0:
         s_num = pd.to_numeric(s, errors="coerce")
         if s_num.notna().any():
@@ -335,13 +329,10 @@ def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
             maxv = float(vals.max())
             medv = float(vals.median())
             if maxv > 1e12 or medv > 1e12:
-                # mili-giây
                 dt = pd.to_datetime(s_num, unit="ms", errors="coerce")
             elif maxv > 1e9 or medv > 1e9:
-                # giây
                 dt = pd.to_datetime(s_num, unit="s", errors="coerce")
             else:
-                # Excel serial (tính từ 1899-12-30)
                 base = pd.Timestamp("1899-12-30")
                 try:
                     dt_candidate = pd.to_timedelta(s_num, unit="D") + base
@@ -349,7 +340,6 @@ def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
                     dt = dt_candidate.where(mask_ok, other=pd.NaT)
                 except Exception:
                     pass
-
     out["date"] = dt
     return out
 
@@ -619,7 +609,7 @@ def build_column_config(cols: List[str]) -> Dict[str, object]:
     return cfg
 
 # =========================
-# Unified table renderer
+# Unified table renderer + highlight
 # =========================
 def _wrap_for_plotly(val: str, width: int = 22) -> str:
     s = "" if val is None else str(val)
@@ -634,10 +624,20 @@ def _wrap_for_plotly(val: str, width: int = 22) -> str:
         parts.append(seg)
     return "<br>".join(parts)
 
-def render_table(df_print: pd.DataFrame, height: int, highlight_b: bool = False, version_b: Optional[str] = None):
-    col_cfg = build_column_config(list(df_print.columns))
-
-    if not (highlight_b and version_b and ("version" in df_print.columns)):
+def render_table(
+    df_print: pd.DataFrame,
+    height: int,
+    cell_colors: Optional[list] = None,
+    highlight_b: bool = False,
+    version_b: Optional[str] = None,
+):
+    """
+    - Nếu cell_colors is None: dùng st.dataframe (không highlight từng ô).
+    - Nếu có cell_colors: dùng Plotly Table để đổ màu từng ô.
+      cell_colors là ma trận [n_col][n_row] theo đúng thứ tự df_print.columns.
+    """
+    if cell_colors is None:
+        col_cfg = build_column_config(list(df_print.columns))
         st.dataframe(df_print, use_container_width=True, hide_index=True, column_config=col_cfg, height=height)
         return
 
@@ -645,7 +645,6 @@ def render_table(df_print: pd.DataFrame, height: int, highlight_b: bool = False,
     for col in [c for c in ["ad_name", "ad_unit", "app"] if c in df_wrap.columns]:
         df_wrap[col] = df_wrap[col].apply(lambda x: _wrap_for_plotly(x, width=22))
 
-    row_colors = ["#FFF5BF" if str(v) == str(version_b) else "white" for v in df_wrap["version"]]
     header_color = "#eaf0ff"
     header_vals = [LABEL_MAP.get(c, c) for c in df_wrap.columns]
 
@@ -670,7 +669,7 @@ def render_table(df_print: pd.DataFrame, height: int, highlight_b: bool = False,
                 ),
                 cells=dict(
                     values=[df_wrap[c] for c in df_wrap.columns],
-                    fill_color=[row_colors for _ in df_wrap.columns],
+                    fill_color=cell_colors,
                     align="left",
                     height=30,
                 ),
@@ -679,6 +678,82 @@ def render_table(df_print: pd.DataFrame, height: int, highlight_b: bool = False,
     )
     fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0), autosize=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+def build_checkver_cell_colors(
+    df_numeric: pd.DataFrame,
+    print_cols: List[str],
+    version_a: str,
+    version_b: str,
+    id_cols: List[str],
+    shade_b_rows: bool = True,
+) -> list:
+    """
+    Trả về ma trận màu [n_col][n_row] cho df_numeric theo các cột print_cols.
+    - Hàng Version B: nền be nhạt (nếu shade_b_rows=True).
+    - Các ô ở hàng Version B tại các cột:
+        show_rate_on_request, requests,
+        req_per_user, req_per_new_user,
+        imp_per_user, imp_per_new_user,
+        rev_per_user, rev_per_new_user
+      được tô:
+        + Xanh lá (#22c55e) nếu B > A
+        + Cam (#fb923c) nếu B < A
+      Nếu A không có giá trị: coi B>0 là tốt (xanh), B<=0 không tô.
+      Cột nào NaN do rule native/non-native thì không tô.
+    """
+    n_rows = len(df_numeric)
+    n_cols = len(print_cols)
+
+    base_A = "white"
+    base_B = "#F6EBD9" if shade_b_rows else "white"
+    good = "#22c55e"
+    bad = "#fb923c"
+
+    ver = df_numeric["version"].astype(str).tolist()
+    cell_colors = [[(base_B if ver[r] == str(version_b) else base_A) for r in range(n_rows)] for _ in range(n_cols)]
+
+    def key_of_row(r: int):
+        return tuple(df_numeric.loc[r, c] if c in df_numeric.columns else None for c in id_cols)
+
+    idxA, idxB = {}, {}
+    for r in range(n_rows):
+        k = key_of_row(r)
+        if ver[r] == str(version_a):
+            idxA[k] = r
+        elif ver[r] == str(version_b):
+            idxB[k] = r
+
+    comp_cols = [
+        "show_rate_on_request",
+        "requests",
+        "req_per_user", "req_per_new_user",
+        "imp_per_user", "imp_per_new_user",
+        "rev_per_user", "rev_per_new_user",
+    ]
+
+    for k, rB in idxB.items():
+        rA = idxA.get(k, None)
+        for col in comp_cols:
+            if col not in df_numeric.columns or col not in print_cols:
+                continue
+            cidx = print_cols.index(col)
+            vB = pd.to_numeric(df_numeric.iloc[rB][col], errors="coerce")
+            vA = pd.to_numeric(df_numeric.iloc[rA][col], errors="coerce") if rA is not None else np.nan
+            if pd.isna(vB):
+                continue
+            color = None
+            if pd.isna(vA):
+                if pd.notna(vB) and vB > 0:
+                    color = good
+            else:
+                if vB > vA:
+                    color = good
+                elif vB < vA:
+                    color = bad
+            if color:
+                cell_colors[cidx][rB] = color
+
+    return cell_colors
 
 # =========================
 # Excel export (auto engine)
@@ -821,7 +896,7 @@ if isinstance(st.session_state.get("global_df_base"), pd.DataFrame) and not st.s
 else:
     df_work = None
 
-# Sidebar: GLOBAL filters (áp lên df_work và lưu vào session)
+# Sidebar: GLOBAL filters
 def apply_global_filters(dframe: pd.DataFrame) -> pd.DataFrame:
     if dframe is None or dframe.empty:
         return dframe
@@ -862,7 +937,7 @@ if df_work is not None:
 else:
     st.session_state["global_df"] = None
 
-# Sidebar: kích thước bảng chung
+# Sidebar: kích thước
 with st.sidebar.expander("Kích thước bảng", expanded=False):
     max_width = st.slider("Độ rộng tối đa trang (px)", min_value=1200, max_value=2200, value=1700, step=50)
     table_height = st.slider("Chiều cao bảng (px)", min_value=400, max_value=1200, value=800, step=20)
@@ -881,7 +956,6 @@ persist_active_tab(tab_labels)
 with tabs[0]:
     st.subheader("Bảng tổng hợp")
 
-    # === Hướng dẫn (Manual Floor Log) ===
     with st.expander("Hướng dẫn", expanded=True):
         st.markdown(
             """
@@ -959,7 +1033,6 @@ with tabs[0]:
         st.download_button("Tải CSV kết quả", data=csv_bytes, file_name="admob_aggregated.csv", mime="text/csv")
 
         st.subheader("Biểu đồ")
-        # Đếm số dòng có 'date' hợp lệ để quyết định vẽ
         valid_dates = 0
         if "date" in df.columns:
             try:
@@ -981,7 +1054,7 @@ with tabs[0]:
             title2 = f"{metric_pick} theo ngày" + (f" by {color_dim}" if color_dim else "")
             st.plotly_chart(px.line(ts2, x="date", y=metric_pick, color=color_dim, title=title2), use_container_width=True)
         else:
-            st.info("Không vẽ được vì cột 'date' không hợp lệ hoặc sau lọc không còn dữ liệu ngày. Hãy kiểm tra tên/định dạng cột 'date' hoặc nới rộng khoảng ngày ở bộ lọc.")
+            st.info("Không vẽ được vì cột 'date' không hợp lệ hoặc sau lọc không còn dữ liệu ngày.")
 
 # =========================
 # Helpers cho Firebase (users/new users)
@@ -1045,7 +1118,7 @@ def load_firebase_df(uploaded_files) -> Optional[pd.DataFrame]:
     return agg
 
 # =========================
-# TAB 2: Checkver — So sánh phiên bản và chỉ số Firebase
+# TAB 2: Checkver
 # =========================
 def detect_version_col(df: pd.DataFrame) -> Optional[str]:
     cands = []
@@ -1073,24 +1146,16 @@ def version_tuple(v: str) -> Tuple[int, ...]:
     return nums if nums else (0,)
 
 def apply_native_rev_rule(df: pd.DataFrame, mapping_applied: bool) -> pd.DataFrame:
-    """
-    Khi đã mapping:
-    - Native*: giữ imp/new user, req/new user, rev/new user; ẩn imp/user, req/user, rev/user.
-    - Non-native: giữ imp/user, req/user, rev/user; ẩn imp/new user, req/new user, rev/new user.
-    """
     if df is None or df.empty or not mapping_applied:
         return df
     df = df.copy()
     prefixes = tuple(NATIVE_PREFIXES)
-
     mask_native = False
     if "ad_name" in df.columns:
         mask_native = df["ad_name"].astype(str).str.lower().str.startswith(prefixes)
     if "ad_unit" in df.columns:
         mask_native = mask_native | df["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
-
     mask_other = ~mask_native
-
     for col in ["imp_per_user", "req_per_user", "rev_per_user"]:
         if col in df.columns:
             df.loc[mask_native, col] = np.nan
@@ -1099,7 +1164,6 @@ def apply_native_rev_rule(df: pd.DataFrame, mapping_applied: bool) -> pd.DataFra
             df.loc[mask_other, col] = np.nan
     return df
 
-# --------- Phân tích nhóm theo các prefix ---------
 def format_pct(x: float) -> str:
     return "—" if pd.isna(x) else f"{x*100:,.2f}%"
 
@@ -1110,60 +1174,41 @@ def format_num6(x: float) -> str:
     return "—" if pd.isna(x) else f"{x:,.6f}"
 
 def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict[str, Dict[str, float]]]:
-    """
-    - Chọn toàn bộ ad_unit/ad_name bắt đầu bằng `prefix`.
-    - Tính các chỉ số dựa trên tổng (match_rate/show_rate/CTR) để so sánh.
-    - Với các chỉ số per-user/new-user: cộng tổng các giá trị per-row theo rule nhóm.
-      Ví dụ native_* => sum(imp_per_new_user), sum(req_per_new_user), sum(rev_per_new_user).
-      Non-native => sum(imp_per_user), sum(req_per_user), sum(rev_per_user).
-    """
     if agg_df is None or agg_df.empty:
         return None
-
     def filt(d: pd.DataFrame, ver: str) -> pd.DataFrame:
         d = d[d["version"].astype(str) == str(ver)]
         mask = d["ad_unit"].astype(str).str.lower().str.startswith(prefix)
         if "ad_name" in d.columns:
             mask = mask | d["ad_name"].astype(str).str.lower().str.startswith(prefix)
         return d[mask].copy()
-
     A = filt(agg_df, version_a)
     B = filt(agg_df, version_b)
     if B.empty:
-        return None  # chỉ phân tích khi B có dữ liệu
-
+        return None
     def enrich_and_summarize(d: pd.DataFrame) -> Dict[str, float]:
         if d is None or d.empty:
             return dict(match_rate=np.nan, show_rate=np.nan, ctr=np.nan,
                         imp_user_sum=np.nan, imp_new_user_sum=np.nan,
                         req_user_sum=np.nan, req_new_user_sum=np.nan,
                         rev_user_sum=np.nan, rev_new_user_sum=np.nan)
-
-        # Tổng để tính các tỷ lệ
         req = pd.to_numeric(d["requests"], errors="coerce").sum()
         mreq = pd.to_numeric(d["matched_requests"], errors="coerce").sum()
         imp = pd.to_numeric(d["impressions"], errors="coerce").sum()
         clk = pd.to_numeric(d["clicks"], errors="coerce").sum()
         rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum()
-
         eps = 1e-12
         match_rate = (mreq / (req + eps)) if req > 0 else np.nan
         show_rate = (imp / (req + eps)) if req > 0 else np.nan
         ctr = (clk / (imp + eps)) if imp > 0 else np.nan
-
-        # Tính các chỉ số per-row rồi cộng lại
         user = pd.to_numeric(d.get("user", np.nan), errors="coerce")
         new_user = pd.to_numeric(d.get("new_user", np.nan), errors="coerce")
-
         imp_user = np.where((user > 0), pd.to_numeric(d["impressions"], errors="coerce") / (user + eps), np.nan)
         imp_new = np.where((new_user > 0), pd.to_numeric(d["impressions"], errors="coerce") / (new_user + eps), np.nan)
-
         req_user = np.where((user > 0), pd.to_numeric(d["requests"], errors="coerce") / (user + eps), np.nan)
         req_new = np.where((new_user > 0), pd.to_numeric(d["requests"], errors="coerce") / (new_user + eps), np.nan)
-
         rev_user = np.where((user > 0), pd.to_numeric(d["estimated_earnings"], errors="coerce") / (user + eps), np.nan)
         rev_new = np.where((new_user > 0), pd.to_numeric(d["estimated_earnings"], errors="coerce") / (new_user + eps), np.nan)
-
         out = dict(
             match_rate=match_rate,
             show_rate=show_rate,
@@ -1176,14 +1221,12 @@ def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: 
             rev_new_user_sum=np.nansum(rev_new),
         )
         return out
-
     return {"A": enrich_and_summarize(A), "B": enrich_and_summarize(B)}
 
 def analysis_to_text(prefix: str, label: str, data: Dict[str, Dict[str, float]], version_a: str, version_b: str) -> List[str]:
     out = []
     A = data["A"]; B = data["B"]
     native = prefix.startswith("native_")
-
     pairs = [
         ("match rate", "match_rate", "pct"),
         ("show rate", "show_rate", "pct"),
@@ -1201,13 +1244,11 @@ def analysis_to_text(prefix: str, label: str, data: Dict[str, Dict[str, float]],
             ("request/user", "req_user_sum", "num2"),
             ("rev/user", "rev_user_sum", "num6"),
         ]
-
     def fmt(v, kind):
         if kind == "pct":   return format_pct(v)
         if kind == "num2":  return format_num2(v)
         if kind == "num6":  return format_num6(v)
         return str(v)
-
     for title, key, kind in pairs:
         va = A.get(key, np.nan)
         vb = B.get(key, np.nan)
@@ -1220,7 +1261,6 @@ def analysis_to_text(prefix: str, label: str, data: Dict[str, Dict[str, float]],
 with tabs[1]:
     st.subheader("Checkver — So sánh 2 version (1 tệp)")
 
-    # === Hướng dẫn (Checkver) ===
     with st.expander("Hướng dẫn", expanded=True):
         st.markdown(
             """
@@ -1234,7 +1274,6 @@ with tabs[1]:
 
     df_all = st.session_state.get("global_df")
 
-    # Khu vực nạp dữ liệu Firebase
     with st.expander("Dữ liệu Firebase (users/new users) — tuỳ chọn", expanded=False):
         st.caption("Nạp file Firebase (CSV/XLSX/TXT/JSON) có cột App version và số liệu Active users, New users.")
         fb_files = st.file_uploader(
@@ -1251,7 +1290,6 @@ with tabs[1]:
     if df_all is None or df_all.empty:
         st.info("Chưa có dữ liệu sau bộ lọc chung.")
     else:
-        # --------- Tự động phát hiện cột Version + khóa so sánh ----------
         ver_col_auto = detect_version_col(df_all) or ("version" if "version" in df_all.columns else df_all.columns[0])
         if any(c in df_all.columns for c in ["ad_unit", "ad_unit_id"]):
             key_col_auto = detect_key_col(df_all)
@@ -1259,11 +1297,9 @@ with tabs[1]:
             key_col_auto = "ad_name"
         else:
             key_col_auto = df_all.columns[0]
-
         ver_col = ver_col_auto
         key_col = key_col_auto
 
-        # ---------- Tùy chọn nâng cao: override khi cần ----------
         with st.expander("Tùy chọn nâng cao (chỉ mở nếu phát hiện sai)", expanded=False):
             ver_col = st.selectbox(
                 "Cột Version",
@@ -1289,7 +1325,6 @@ with tabs[1]:
                 else:
                     key_col = st.selectbox("Chọn cột tên quảng cáo (không có ad_name)", options=list(df_all.columns))
 
-        # ---------- Chọn 2 version ----------
         versions = [str(v) for v in sorted(df_all[ver_col].dropna().astype(str).unique(), key=version_tuple)]
         if len(versions) < 2:
             st.warning("Cột Version cần có ít nhất 2 giá trị khác nhau để so sánh.")
@@ -1299,7 +1334,6 @@ with tabs[1]:
             version_a = colv1.selectbox("Version A", options=versions, index=max(0, idx_latest - 1))
             version_b = colv2.selectbox("Version B (highlight)", options=versions, index=idx_latest)
 
-            # ---------- Group & chuẩn tên cột ----------
             base_dims = ["app", ver_col, key_col]
             if key_col != "ad_name" and "ad_name" in df_all.columns:
                 base_dims.append("ad_name")
@@ -1314,7 +1348,6 @@ with tabs[1]:
             if key_col == "ad_name" and "ad_unit" not in agg.columns:
                 agg["ad_unit"] = agg["ad_name"]
 
-            # ---------- Tập common/only ----------
             setA = set(agg.loc[agg["version"].astype(str) == str(version_a), "ad_unit"])
             setB = set(agg.loc[agg["version"].astype(str) == str(version_b), "ad_unit"])
             common_keys = sorted(setA & setB)
@@ -1325,7 +1358,6 @@ with tabs[1]:
                 horizontal=True,
             )
 
-            # ---------- Ô lọc từ khoá + nút X ----------
             c_search, c_clear = st.columns([0.94, 0.06])
             with c_search:
                 st.session_state["checkver_search"] = st.text_input(
@@ -1338,7 +1370,7 @@ with tabs[1]:
                     safe_rerun()
             search = st.session_state["checkver_search"].strip().lower()
 
-            highlight_b = st.checkbox("Tô màu Version B", value=True)
+            shade_b = st.checkbox("Tô màu Version B", value=True)
 
             if view.startswith("Common"):
                 df_view = agg[agg["ad_unit"].isin(common_keys) & agg["version"].isin([version_a, version_b])].copy()
@@ -1367,7 +1399,6 @@ with tabs[1]:
             sort_cols = [c for c in ["app"] if c in df_view.columns] + ["_sort_name", "_ver_tuple"]
             df_view = df_view.sort_values(sort_cols, kind="stable").drop(columns=["_sort_name", "_ver_tuple"])
 
-            # ---------- Merge Firebase ----------
             fb_df: Optional[pd.DataFrame] = st.session_state.get("firebase_df")
             if isinstance(fb_df, pd.DataFrame) and not fb_df.empty:
                 join_keys = [k for k in ["app", "version"] if k in df_view.columns and k in fb_df.columns]
@@ -1377,7 +1408,6 @@ with tabs[1]:
                 if c not in df_view.columns:
                     df_view[c] = np.nan
 
-            # ---------- Tính các chỉ số per user/new user ----------
             user = pd.to_numeric(df_view["user"], errors="coerce")
             new_user = pd.to_numeric(df_view["new_user"], errors="coerce")
             eps = 1e-12
@@ -1388,10 +1418,8 @@ with tabs[1]:
             df_view["req_per_user"] = np.where(user > 0, df_view["requests"].astype(float) / (user + eps), np.nan)
             df_view["req_per_new_user"] = np.where(new_user > 0, df_view["requests"].astype(float) / (new_user + eps), np.nan)
 
-            # ---------- Áp rule native / non-native khi đã mapping ----------
             df_view = apply_native_rev_rule(df_view, mapping_applied=bool(st.session_state.get("ad_mapping_applied")))
 
-            # ---------- Chỉ hiển thị đúng các cột yêu cầu ----------
             ordered_cols = [
                 "app", "version", "ad_unit", "ad_name",
                 "estimated_earnings", "ecpm", "requests", "match_rate", "matched_requests",
@@ -1413,8 +1441,22 @@ with tabs[1]:
             if show_stt:
                 df_print.insert(0, "STT", np.arange(1, len(df_print) + 1))
 
-            # ---------- Hiển thị bảng ----------
-            render_table(df_print, table_height, highlight_b=highlight_b, version_b=version_b)
+            # ---------- Hiển thị bảng với highlight từng ô ----------
+            id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns]
+            if not id_cols:
+                id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
+            if not id_cols:
+                id_cols = ["ad_unit"] if "ad_unit" in df_view.columns else ["ad_name"]
+            print_cols = list(df_print.columns)
+            cell_colors = build_checkver_cell_colors(
+                df_numeric=df_view.reset_index(drop=True),
+                print_cols=print_cols,
+                version_a=version_a,
+                version_b=version_b,
+                id_cols=id_cols,
+                shade_b_rows=bool(shade_b),
+            )
+            render_table(df_print, table_height, cell_colors=cell_colors)
 
             # ---------- Export ----------
             xls = to_excel_bytes({"Checkver": df_view[ordered_cols]})
@@ -1430,8 +1472,6 @@ with tabs[1]:
             st.subheader("Phân tích checkver")
             if st.button("Phân tích checkver", type="primary"):
                 st.write(f"So sánh {version_b} vs {version_a} theo danh mục: {', '.join([g[0] for g in ANALYZE_GROUPS])}")
-
-                # Dùng bản đã gộp (agg) + ghép Firebase để có user/new_user cho từng ad_unit + version
                 base = agg.copy()
                 fb_df2 = st.session_state.get("firebase_df")
                 if isinstance(fb_df2, pd.DataFrame) and not fb_df2.empty:
@@ -1441,8 +1481,6 @@ with tabs[1]:
                 else:
                     if "user" not in base.columns: base["user"] = np.nan
                     if "new_user" not in base.columns: base["new_user"] = np.nan
-
-                # Đảm bảo có ad_unit
                 if "ad_unit" not in base.columns and "ad_name" in base.columns:
                     base["ad_unit"] = base["ad_name"]
 
@@ -1457,6 +1495,6 @@ with tabs[1]:
                         st.markdown(f"- Nhóm: {label} (prefix: {prefix})")
                         for ln in lines:
                             st.write(ln)
-                        st.write("")  # spacing
+                        st.write("")
                 if not results_any:
                     st.info("Version B không có ads thuộc các nhóm trong danh sách phân tích.")
