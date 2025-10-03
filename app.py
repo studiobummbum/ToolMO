@@ -34,7 +34,6 @@ st.markdown(
     [data-testid="stDataFrame"] [role="columnheader"] * { color: #101828 !important; font-weight: 800 !important; }
     [data-testid="stDataFrame"] thead { box-shadow: 0 2px 0 rgba(0,0,0,0.06); }
 
-    /* bẻ dòng trong cell */
     [data-testid="stDataFrame"] div[role="cell"] {
       white-space: normal !important;
       overflow-wrap: anywhere !important;
@@ -184,7 +183,7 @@ def read_any_table_from_name_bytes(name: str, b: bytes) -> pd.DataFrame:
             return pd.json_normalize(json.loads(b.decode("utf-8", errors="ignore")))
     return try_read_csv(b)
 
-# Reader đặc thù cho Firebase
+# Reader đặc thù cho Firebase CSV
 def read_firebase_csv_bytes(b: bytes) -> pd.DataFrame:
     try:
         text = b.decode("utf-8-sig", errors="ignore")
@@ -228,35 +227,35 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                     target = "ad_unit_id"
                 else:
                     target = "ad_unit"
-            elif "dinh dang" in key or "ad format" in key hoặc "format" in key or "ad type" in key:
+            elif ("dinh dang" in key) or ("ad format" in key) or ("format" in key) or ("ad type" in key):
                 target = "ad_format"
-            elif ("thu nhap" in key or "doanh thu" in key or "estimated earnings" in key):
+            elif ("thu nhap" in key) or ("doanh thu" in key) or ("estimated earnings" in key):
                 target = "estimated_earnings"
-            elif ("yeu cau da khop" in key or ("matched" in key and "request" in key)):
+            elif ("yeu cau da khop" in key) or (("matched" in key) and ("request" in key)):
                 target = "matched_requests"
-            elif "yeu cau" in key or "requests" in key:
+            elif ("yeu cau" in key) or ("requests" in key):
                 if not any(b in key for b in BIDDING_BLOCKERS):
                     target = "requests"
-            elif "hien thi" in key or "impressions" in key:
+            elif ("hien thi" in key) or ("impressions" in key):
                 if (any(b in key for b in PER_VALUE_BLOCKERS) or any(b in key for b in RATE_BLOCKERS)):
                     target = None
                 else:
                     target = "impressions"
-            elif "nhap" in key or "click" in key:
+            elif ("nhap" in key) or ("click" in key):
                 target = "clicks"
             elif "ecpm" in key:
                 target = "ecpm_input"
-            elif ("tien te" in key or "currency" in key):
+            elif ("tien te" in key) or ("currency" in key):
                 target = "currency"
-            elif "app id" in key or ("id" in key and "app" in key):
+            elif ("app id" in key) or (("id" in key) and ("app" in key)):
                 target = "app_id"
-            elif key == "app" or "ung dung" in key:
+            elif (key == "app") or ("ung dung" in key):
                 target = "app"
             elif key in ("os", "platform", "nen tang"):
                 target = "platform"
-            elif "date" in key or "ngay" in key hoặc "report" in key:
+            elif ("date" in key) or ("ngay" in key) or ("report" in key):
                 target = "date"
-            elif "version" in key or "build" in key or "release" in key:
+            elif ("version" in key) or ("build" in key) or ("release" in key):
                 target = "version"
         if target and target not in used_targets:
             mapped.append(target)
@@ -350,7 +349,7 @@ def ensure_metric_cols(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = 0.0
     return df
 
-# KPI: không dùng eps
+# KHÔNG dùng eps
 def compute_kpis(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     req = df.get("requests", 0).astype(float)
@@ -687,17 +686,11 @@ def build_checkver_cell_colors(
     version_b: str,
     id_cols: List[str],
     shade_b_rows: bool = True,
-    allowed_keys: Optional[Set[Tuple]] = None,  # None = highlight tất cả; set = chỉ highlight các keys trong set
+    allowed_keys: Optional[Set[Tuple]] = None,
 ) -> list:
     """
-    Ma trận màu [n_col][n_row]:
-    - Hàng Version B: nền be nhạt nếu hàng đó thuộc allowed_keys (khi template ON). Nếu không, nền trắng.
-    - Ô ở hàng Version B được tô theo so sánh với A cho các cột:
-      show_rate_on_request,
-      req_per_user, req_per_new_user,
-      imp_per_user, imp_per_new_user,
-      rev_per_user, rev_per_new_user
-    - Xanh lá: B > A; Cam: B < A; A trống → B>0 coi là tốt.
+    - Nếu allowed_keys = None: highlight tất cả.
+    - Nếu allowed_keys là set các key (app, ad_unit|ad_name): chỉ highlight các hàng có key thuộc set này.
     - KHÔNG highlight cột Requests.
     """
     n_rows = len(df_numeric)
@@ -710,7 +703,6 @@ def build_checkver_cell_colors(
 
     ver = df_numeric["version"].astype(str).tolist()
 
-    # Helper lấy key và check allowed
     def key_of_row(r: int) -> Tuple:
         return tuple(df_numeric.loc[r, c] if c in df_numeric.columns else None for c in id_cols)
 
@@ -721,13 +713,11 @@ def build_checkver_cell_colors(
         else:
             allowed_row.append(key_of_row(r) in allowed_keys)
 
-    # Nền cơ bản
     cell_colors = [[
         (base_B if (ver[r] == str(version_b) and allowed_row[r]) else base_A)
         for r in range(n_rows)
     ] for _ in range(n_cols)]
 
-    # Lập map A/B
     idxA, idxB = {}, {}
     for r in range(n_rows):
         k = key_of_row(r)
@@ -745,7 +735,6 @@ def build_checkver_cell_colors(
 
     for k, rB in idxB.items():
         rA = idxA.get(k, None)
-        # Nếu template mode và key này không nằm trong allowed_keys thì bỏ qua
         if allowed_keys is not None and k not in allowed_keys:
             continue
         for col in comp_cols:
@@ -978,9 +967,9 @@ with tabs[0]:
         st.markdown(
             """
 - B1: Upload file csv lên
-- B2: Ở phần bộ lọc phía bên trái thì có thể chọn theo tùy chọn, nếu chưa có mapping ads unit code thì vào phần ads unit code làm theo hướng dẫn
-- B3: Bật option mapping ads unit code để report xem dễ hơn
-- B4: Nếu muốn xem nhiều report thì add thêm, còn không thì chỉ việc X file csv đó đi thì sẽ không bị lẫn data
+- B2: Chọn lọc ở sidebar; nếu chưa có mapping ads unit code thì thêm ở phần mapping
+- B3: Bật mapping để report dễ đọc
+- B4: Nếu xem nhiều report thì upload thêm; muốn xoá dữ liệu cũ thì clear cache hoặc bỏ file cũ
             """
         )
 
@@ -1191,7 +1180,7 @@ def format_num2(x: float) -> str:
 def format_num6(x: float) -> str:
     return "—" if pd.isna(x) else f"{x:,.6f}"
 
-# Phân tích nhóm: chỉ cộng 4 chỉ số per-user/new-user; còn lại liệt kê chi tiết theo từng ad unit
+# Phân tích nhóm: chỉ cộng 4 chỉ số per-user/new-user; showrate liệt kê theo từng ad unit
 def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict]:
     if agg_df is None or agg_df.empty:
         return None
@@ -1208,7 +1197,7 @@ def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: 
     A = filt(agg_df, version_a)
     B = filt(agg_df, version_b)
     if B.empty:
-        return None  # chỉ phân tích khi B có dữ liệu
+        return None
 
     def sums_per_user(d: pd.DataFrame) -> Dict[str, float]:
         if d is None or d.empty:
@@ -1271,7 +1260,6 @@ def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, versio
 
     st.markdown(f"• Nhóm: {label} (prefix: {prefix})")
 
-    # In 4 chỉ số tổng theo rule
     for title, va, vb, kind in sums_pairs:
         if pd.isna(va) and pd.isna(vb):
             continue
@@ -1285,7 +1273,6 @@ def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, versio
             trend = "bằng"
         st.write(f"- {title}: {version_a} = {fmt(va, kind)} → {version_b} = {fmt(vb, kind)} ({trend}).")
 
-    # Liệt kê chi tiết showrate theo từng ad unit khớp tiền tố (kèm Requests A/B)
     names = sorted(set(B["by_item"].keys()) | set(A["by_item"].keys()))
     if names:
         st.write("- Chi tiết show rate theo từng ad unit:")
@@ -1308,7 +1295,6 @@ def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, versio
                 f"{version_b} {format_pct(srB)} (req {int(rqB) if pd.notna(rqB) else '—'}) — {trend}."
             )
 
-    # Divider giữa các nhóm
     st.divider()
 
 with tabs[1]:
@@ -1317,11 +1303,11 @@ with tabs[1]:
     with st.expander("Hướng dẫn", expanded=True):
         st.markdown(
             """
-- B1: Upload file CSV Admob lên, CSV này có thể dùng chung với Manual Floor Log
-- B2: Upload file CSV từ Firebase Analytics phần Version rồi nhấn Nạp Firebase
-- B3: Bật mapping nếu muốn hiển thị theo ad name
-- B4: Chọn Version A (cũ) và Version B (mới). Bật “Checkver template” nếu chỉ muốn highlight những nhóm trong danh mục phân tích.
-- B5: Nhấn “Phân tích checkver” để xem phần phân tích chi tiết từng nhóm.
+- B1: Upload CSV Admob (dùng chung với tab Manual).
+- B2: Upload Firebase (Version, Active/New users) rồi bấm Nạp Firebase.
+- B3: Bật mapping nếu muốn hiển thị ad name.
+- B4: Chọn Version A (cũ) và Version B (mới). Có thể bật “Checkver template” để chỉ highlight các nhóm phân tích.
+- B5: Bấm “Phân tích checkver” để xem phân tích chi tiết từng nhóm.
             """
         )
 
@@ -1454,7 +1440,6 @@ with tabs[1]:
             sort_cols = [c for c in ["app"] if c in df_view.columns] + ["_sort_name", "_ver_tuple"]
             df_view = df_view.sort_values(sort_cols, kind="stable").drop(columns=["_sort_name", "_ver_tuple"])
 
-            # Merge Firebase
             fb_df: Optional[pd.DataFrame] = st.session_state.get("firebase_df")
             if isinstance(fb_df, pd.DataFrame) and not fb_df.empty:
                 join_keys = [k for k in ["app", "version"] if k in df_view.columns and k in fb_df.columns]
@@ -1464,7 +1449,6 @@ with tabs[1]:
                 if c not in df_view.columns:
                     df_view[c] = np.nan
 
-            # Per-user/new-user
             user = pd.to_numeric(df_view["user"], errors="coerce")
             new_user = pd.to_numeric(df_view["new_user"], errors="coerce")
             df_view["imp_per_user"]     = df_view["impressions"].astype(float).divide(user).where(user > 0)
@@ -1474,7 +1458,6 @@ with tabs[1]:
             df_view["req_per_user"]     = df_view["requests"].astype(float).divide(user).where(user > 0)
             df_view["req_per_new_user"] = df_view["requests"].astype(float).divide(new_user).where(new_user > 0)
 
-            # Áp rule native/non-native khi đã mapping
             df_view = apply_native_rev_rule(df_view, mapping_applied=bool(st.session_state.get("ad_mapping_applied")))
 
             ordered_cols = [
@@ -1498,11 +1481,9 @@ with tabs[1]:
             if show_stt:
                 df_print.insert(0, "STT", np.arange(1, len(df_print) + 1))
 
-            # Allowed keys cho template
-            allowed_keys = None
+            # Xác định id_cols và allowed_keys (template)
             if template_mode:
                 prefixes = tuple(p[0] for p in ANALYZE_GROUPS)
-                # chọn các hàng có ad_unit/ad_name bắt đầu bằng 1 trong các prefix
                 mask_pref = df_view["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
                 if "ad_name" in df_view.columns:
                     mask_pref = mask_pref | df_view["ad_name"].astype(str).str.lower().str.startswith(prefixes)
@@ -1519,11 +1500,8 @@ with tabs[1]:
                     id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
                 if not id_cols:
                     id_cols = ["ad_unit"] if "ad_unit" in df_view.columns else ["ad_name"]
+                allowed_keys = None
 
-            # Hiển thị bảng với highlight từng ô
-            if not template_mode:
-                # id_cols đã được set ở trên
-                pass
             print_cols = list(df_print.columns)
             cell_colors = build_checkver_cell_colors(
                 df_numeric=df_view.reset_index(drop=True),
