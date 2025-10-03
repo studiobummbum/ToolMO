@@ -1,11 +1,13 @@
 # app.py
 import io
+import os
 import re
+import json
 import unicodedata
 from typing import List, Dict, Optional, Tuple, Set
-from datetime import timedelta
+from datetime import timedelta, datetime
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-import csv  # <-- dùng ghi CSV từng dòng để ghép nhiều section
+import csv
 
 import numpy as np
 import pandas as pd
@@ -16,12 +18,29 @@ from streamlit.components.v1 import html as st_html
 
 st.set_page_config(page_title="MO Tool", layout="wide")
 
+# =========================
+# Snapshot storage config (Local + Google Drive)
+# =========================
+SNAPSHOT_DIR = "snapshots"
+GDRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+
 # -------------------- Helper rerun --------------------
 def safe_rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
+
+def _slug(s: str) -> str:
+    s = str(s or "").strip()
+    s = re.sub(r"[^\w\-.]+", "_", s)
+    return s[:80] or "snapshot"
+
+def _ensure_snap_dir():
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+def _snap_path(name: str) -> str:
+    return os.path.join(SNAPSHOT_DIR, f"{_slug(name)}.json")
 
 # -------------------- Global CSS --------------------
 st.markdown(
@@ -57,6 +76,28 @@ st.session_state.setdefault("filters_open", False)
 st.session_state.setdefault("checkver_search", "")
 st.session_state.setdefault("firebase_df", None)
 st.session_state.setdefault("checkver_daycols", {})  # { "verA__verB": ["YYYY-MM-DD", ...] }
+
+# Snapshot storage session
+st.session_state.setdefault("snap_storage", "Local")  # Local | Google Drive
+st.session_state.setdefault("gdrive_folder_id", "")
+st.session_state.setdefault("gdrive_creds_json", None)  # bytes
+st.session_state.setdefault("gdrive_ready", False)
+
+# Try preload Google Drive config from secrets (deploy)
+def _preload_gdrive_from_secrets():
+    try:
+        # 2 kiểu: string JSON hoặc dict
+        if "gdrive_service_account_json" in st.secrets and "gdrive_folder_id" in st.secrets:
+            raw = st.secrets["gdrive_service_account_json"]
+            if isinstance(raw, dict):
+                raw = json.dumps(raw, ensure_ascii=False)
+            st.session_state["gdrive_creds_json"] = raw.encode("utf-8")
+            st.session_state["gdrive_folder_id"] = st.secrets["gdrive_folder_id"]
+            st.session_state["gdrive_ready"] = True
+    except Exception:
+        pass
+
+_preload_gdrive_from_secrets()
 
 # =========================
 # Utils: normalize strings
@@ -109,7 +150,6 @@ CANONICAL_MAP: Dict[str, List[str]] = {
     "rpm_input": ["rpm"],
     "version": ["version", "app version", "app_ver", "ver", "build", "build version", "release"],
 }
-
 BIDDING_BLOCKERS = ["gia thau", "gia-thau", "dau gia", "bid", "bidding", "auction"]
 RATE_BLOCKERS = ["ty le", "ty-le", "rate"]
 PER_VALUE_BLOCKERS = ["tren moi", "per ", "per-", "per_", "moi nguoi", "per user", "per viewer"]
@@ -183,8 +223,8 @@ def read_any_table_from_name_bytes(name: str, b: bytes) -> pd.DataFrame:
         try:
             return pd.read_json(io.BytesIO(b))
         except ValueError:
-            import json
-            return pd.json_normalize(json.loads(b.decode("utf-8", errors="ignore")))
+            import json as _json
+            return pd.json_normalize(_json.loads(b.decode("utf-8", errors="ignore")))
     return try_read_csv(b)
 
 # Reader đặc thù cho Firebase CSV
@@ -430,27 +470,6 @@ def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
 # ================
 # Mapping ad_unit -> ad_name
 # ================
-def pick_mapping_cols(df_map: pd.DataFrame) -> Optional[tuple]:
-    code_syn = {
-        "ad_unit", "ad unit", "adunit", "adunit code", "ad unit id", "ad_unit_id", "unit", "code", "ma", "id don vi quang cao", "ad id", "placement id"
-    }
-    name_syn = {
-        "ad_name", "ad name", "adunit name", "ad unit name", "ten don vi", "ten ad", "name", "friendly name", "placement name"
-    }
-    code_col = None
-    name_col = None
-    for c in df_map.columns:
-        k = normalize_key(c)
-        if code_col is None and k in code_syn:
-            code_col = c
-        if name_col is None and k in name_syn:
-            name_col = c
-    if code_col and name_col:
-        return (code_col, name_col)
-    if df_map.shape[1] >= 2:
-        return (df_map.columns[0], df_map.columns[1])
-    return None
-
 def try_read_mapping_file(uploaded_file) -> Optional[pd.DataFrame]:
     if uploaded_file is None:
         return None
@@ -494,14 +513,12 @@ def build_mapping_dict(file, pasted_text: str) -> Dict[str, str]:
             df_map = try_read_mapping_file(file)
             if df_map is not None and not df_map.empty:
                 df_map = df_map.dropna(how="all").dropna(axis=1, how="all")
-                cols = pick_mapping_cols(df_map)
-                if cols:
-                    code_col, name_col = cols
-                    for _, row in df_map.iterrows():
-                        code = str(row.get(code_col, "")).strip()
-                        val = str(row.get(name_col, "")).strip()
-                        if code and val:
-                            mapping[code.upper()] = val
+                code_col, name_col = df_map.columns[:2]
+                for _, row in df_map.iterrows():
+                    code = str(row.get(code_col, "")).strip()
+                    val = str(row.get(name_col, "")).strip()
+                    if code and val:
+                        mapping[code.upper()] = val
         except Exception as e:
             st.warning(f"Không đọc được file mapping: {e}")
     text_map = parse_mapping_text(pasted_text)
@@ -535,9 +552,9 @@ def build_pretty_df(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     for c in num6_cols:  out[c] = out[c].apply(fmt_num6)
     return out
 
-# =========================
-# Export template (Google Sheet)
-# =========================
+# ================
+# Export detail template DF (dùng cho snapshot)
+# ================
 def _num(series, ndigits=None, as_int=False):
     s = pd.to_numeric(series, errors="coerce")
     if as_int:
@@ -581,27 +598,6 @@ def build_sheet_template_df(df_view: pd.DataFrame) -> pd.DataFrame:
     ]
     exp = exp[col_order]
     return exp
-
-# ================
-# Helper: ad_unit_code summary (cho Manual)
-# ================
-def summarize_codes(s: pd.Series) -> str:
-    vals = [str(v).strip() for v in pd.unique(s.dropna()) if str(v).strip() != ""]
-    if not vals: return ""
-    if len(vals) == 1: return vals[0]
-    short = ";".join(sorted(vals)[:3])
-    return short + ("…" if len(vals) > 3 else "")
-
-def add_adunit_code_column(agg_df: pd.DataFrame, original_df: pd.DataFrame, group_dims: List[str]) -> pd.DataFrame:
-    if "ad_unit" not in original_df.columns:
-        return agg_df
-    code_map = (
-        original_df.groupby(group_dims, dropna=False)["ad_unit"]
-        .agg(summarize_codes)
-        .reset_index()
-        .rename(columns={"ad_unit": "ad_unit_code"})
-    )
-    return agg_df.merge(code_map, on=group_dims, how="left")
 
 # ================
 # Column labels/config
@@ -995,6 +991,29 @@ with st.sidebar.expander("Kích thước bảng", expanded=False):
 st.markdown(f"<style>.block-container{{max-width:{max_width}px !important;}}</style>", unsafe_allow_html=True)
 
 # =========================
+# Sidebar: Snapshot storage config (Local / Google Drive)
+# =========================
+with st.sidebar.expander("Snapshot storage", expanded=False):
+    st.session_state["snap_storage"] = st.radio("Chọn nơi lưu", ["Local", "Google Drive"], index=0)
+    if st.session_state["snap_storage"] == "Google Drive":
+        st.info("Dùng Service Account. Chia sẻ thư mục Drive cho email của Service Account (Role: Content manager).")
+        creds_file = st.file_uploader("Service account JSON", type=["json"], key="gdrive_creds")
+        if creds_file is not None:
+            st.session_state["gdrive_creds_json"] = creds_file.getvalue()
+        st.session_state["gdrive_folder_id"] = st.text_input("Folder ID trên Google Drive", value=st.session_state.get("gdrive_folder_id",""))
+        if st.button("Kiểm tra kết nối Drive"):
+            try:
+                ok = (st.session_state.get("gdrive_creds_json") is not None) and (st.session_state.get("gdrive_folder_id","")!="")
+                st.session_state["gdrive_ready"] = bool(ok)
+                if ok:
+                    st.success("Sẵn sàng sử dụng Google Drive.")
+                else:
+                    st.error("Thiếu credentials hoặc folder ID.")
+            except Exception as e:
+                st.session_state["gdrive_ready"] = False
+                st.error(f"Lỗi: {e}")
+
+# =========================
 # Tabs + persist active
 # =========================
 tab_labels = ["Manual Floor Log", "Checkver"]
@@ -1054,7 +1073,19 @@ with tabs[0]:
 
         agg_df = aggregate(df, group_dims)
         if show_code:
-            agg_df = add_adunit_code_column(agg_df, df, group_dims)
+            def summarize_codes(s: pd.Series) -> str:
+                vals = [str(v).strip() for v in pd.unique(s.dropna()) if str(v).strip() != ""]
+                if not vals: return ""
+                if len(vals) == 1: return vals[0]
+                short = ";".join(sorted(vals)[:3])
+                return short + ("…" if len(vals) > 3 else "")
+            code_map = (
+                df.groupby(group_dims, dropna=False)["ad_unit"]
+                .agg(summarize_codes)
+                .reset_index()
+                .rename(columns={"ad_unit": "ad_unit_code"})
+            )
+            agg_df = agg_df.merge(code_map, on=group_dims, how="left")
 
         display_cols = group_dims + [
             "estimated_earnings", "requests", "matched_requests", "impressions", "clicks",
@@ -1108,7 +1139,7 @@ with tabs[0]:
             st.info("Không vẽ được vì cột 'date' không hợp lệ hoặc sau lọc không còn dữ liệu ngày.")
 
 # =========================
-# Helpers cho Firebase (users/new users)
+# Helpers cho Firebase & Checkver
 # =========================
 def normalize_fb_columns(df: pd.DataFrame) -> pd.DataFrame:
     col_map = {}
@@ -1122,8 +1153,7 @@ def normalize_fb_columns(df: pd.DataFrame) -> pd.DataFrame:
             col_map["new_user"] = c
         elif any(x in k for x in ["active user", "active users", "user", "users", "dau"]) and "user" not in col_map:
             col_map["user"] = c
-    out = df.copy()
-    out = out.rename(columns={v: k for k, v in col_map.items()})
+    out = df.copy().rename(columns={v: k for k, v in col_map.items()})
     keep = [c for c in ["app", "version", "user", "new_user"] if c in out.columns]
     out = out[keep]
     for c in ["user", "new_user"]:
@@ -1168,9 +1198,6 @@ def load_firebase_df(uploaded_files) -> Optional[pd.DataFrame]:
         agg[c] = agg[c].astype(str).str.strip()
     return agg
 
-# =========================
-# TAB 2: Checkver — So sánh phiên bản và chỉ số Firebase
-# =========================
 def detect_version_col(df: pd.DataFrame) -> Optional[str]:
     cands = []
     for c in df.columns:
@@ -1224,115 +1251,7 @@ def format_num2(x: float) -> str:
 def format_num6(x: float) -> str:
     return "—" if pd.isna(x) else f"{x:,.6f}"
 
-# Phân tích nhóm
-def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict]:
-    if agg_df is None or agg_df.empty:
-        return None
-    item_col = "ad_name" if "ad_name" in agg_df.columns else "ad_unit"
-
-    def filt(d: pd.DataFrame, ver: str) -> pd.DataFrame:
-        d = d[d["version"].astype(str) == str(ver)]
-        mask = d["ad_unit"].astype(str).str.lower().str.startswith(prefix)
-        if "ad_name" in d.columns:
-            mask = mask | d["ad_name"].astype(str).str.lower().str.startswith(prefix)
-        return d[mask].copy()
-
-    A = filt(agg_df, version_a)
-    B = filt(agg_df, version_b)
-    if B.empty:
-        return None
-
-    def sums_per_user(d: pd.DataFrame) -> Dict[str, float]:
-        if d is None or d.empty:
-            return dict(imp_user=np.nan, imp_new_user=np.nan, rev_user=np.nan, rev_new_user=np.nan)
-        user = pd.to_numeric(d.get("user", np.nan), errors="coerce")
-        new_user = pd.to_numeric(d.get("new_user", np.nan), errors="coerce")
-        imp = pd.to_numeric(d.get("impressions", np.nan), errors="coerce")
-        rev = pd.to_numeric(d.get("estimated_earnings", np.nan), errors="coerce")
-        imp_user = imp.divide(user).where(user > 0)
-        imp_new_user = imp.divide(new_user).where(new_user > 0)
-        rev_user = rev.divide(user).where(user > 0)
-        rev_new_user = rev.divide(new_user).where(new_user > 0)
-        return dict(
-            imp_user=np.nansum(imp_user),
-            imp_new_user=np.nansum(imp_new_user),
-            rev_user=np.nansum(rev_user),
-            rev_new_user=np.nansum(rev_new_user),
-        )
-
-    def per_item_showrate_requests(d: pd.DataFrame) -> Dict[str, Dict[str, float]]:
-        if d is None or d.empty:
-            return {}
-        g = d.groupby(item_col, dropna=False)[["requests", "impressions"]].sum(min_count=1).reset_index()
-        g["show_rate"] = g["impressions"].divide(g["requests"]).where(g["requests"] > 0)
-        out = {}
-        for _, r in g.iterrows():
-            name = str(r[item_col])
-            out[name] = dict(
-                requests=float(r.get("requests", np.nan)),
-                show_rate=float(r.get("show_rate", np.nan)),
-            )
-        return out
-
-    data = {
-        "A": {"sums": sums_per_user(A), "by_item": per_item_showrate_requests(A)},
-        "B": {"sums": sums_per_user(B), "by_item": per_item_showrate_requests(B)},
-        "item_col": item_col,
-    }
-    return data
-
-def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, version_b: str):
-    A = data["A"]; B = data["B"]
-    sums_pairs = [
-        ("imp/user", A["sums"].get("imp_user"), B["sums"].get("imp_user"), "num2"),
-        ("imp/new user", A["sums"].get("imp_new_user"), B["sums"].get("imp_new_user"), "num2"),
-        ("rev/user", A["sums"].get("rev_user"), B["sums"].get("rev_user"), "num6"),
-        ("rev/new user", A["sums"].get("rev_new_user"), B["sums"].get("rev_new_user"), "num6"),
-    ]
-    def fmt(v, kind):
-        if kind == "num2": return format_num2(v)
-        if kind == "num6": return format_num6(v)
-        if kind == "pct":  return format_pct(v)
-        return str(v)
-
-    st.markdown(f"• Nhóm: {label} (prefix: {prefix})")
-    for title, va, vb, kind in sums_pairs:
-        if pd.isna(va) and pd.isna(vb):
-            continue
-        if pd.notna(vb) and pd.notna(va):
-            trend = "tốt hơn" if vb > va else ("kém hơn" if vb < va else "bằng")
-        elif pd.notna(vb) and pd.isna(va):
-            trend = "tốt hơn"
-        elif pd.isna(vb) and pd.notna(va):
-            trend = "kém hơn"
-        else:
-            trend = "bằng"
-        st.write(f"- {title}: {version_a} = {fmt(va, kind)} → {version_b} = {fmt(vb, kind)} ({trend}).")
-
-    names = sorted(set(B["by_item"].keys()) | set(A["by_item"].keys()))
-    if names:
-        st.write("- Chi tiết show rate theo từng ad unit:")
-        for name in names:
-            srA = A["by_item"].get(name, {}).get("show_rate", np.nan)
-            rqA = A["by_item"].get(name, {}).get("requests", np.nan)
-            srB = B["by_item"].get(name, {}).get("show_rate", np.nan)
-            rqB = B["by_item"].get(name, {}).get("requests", np.nan)
-            if pd.notna(srB) and pd.notna(srA):
-                trend = "tốt hơn" if srB > srA else ("kém hơn" if srB < srA else "bằng")
-            elif pd.notna(srB) and pd.isna(srA):
-                trend = "tốt hơn"
-            elif pd.isna(srB) and pd.notna(srA):
-                trend = "kém hơn"
-            else:
-                trend = "bằng"
-            st.write(
-                f"  • {name} {version_a} showrate {format_pct(srA)} (req {int(rqA) if pd.notna(rqA) else '—'}) "
-                f"{'<' if trend=='kém hơn' else ('>' if trend=='tốt hơn' else '=')} "
-                f"{version_b} {format_pct(srB)} (req {int(rqB) if pd.notna(rqB) else '—'}) — {trend}."
-            )
-    st.divider()
-
-# ------- Daily compare (Decimal cent) -------
+# ------- Daily compare helpers (Checkver) với Decimal chuẩn cent -------
 def _pair_key(ver_a: str, ver_b: str) -> str:
     return f"{str(ver_a)}__{str(ver_b)}"
 
@@ -1391,10 +1310,12 @@ def _daily_revenue_map(df_src: pd.DataFrame, version_list: List[str]) -> Dict[Tu
     d["date"] = pd.to_datetime(d["date"], errors="coerce")
     d = d[d["date"].notna()]
     d["date_iso"] = d["date"].dt.date.astype(str)
+
     for _, r in d.iterrows():
         key = (str(r["version"]), str(r["date_iso"]))
         amount = to_cent(r.get("estimated_earnings", 0))
         out_dec[key] = out_dec.get(key, Decimal("0.00")) + amount
+
     return {k: float(v) for k, v in out_dec.items()}
 
 def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, version: str) -> tuple:
@@ -1543,24 +1464,14 @@ def render_daily_checkver_table(
         pct_total = ((b_total_rpu - a_total_rpu) / a_total_rpu) if (pd.notna(a_total_rpu) and a_total_rpu > 0) else np.nan
         cols_change[2+n].markdown(pct_badge(pct_total), unsafe_allow_html=True)
 
+# =========================
+# TAB 2: Checkver — So sánh phiên bản
+# =========================
 with tabs[1]:
     st.subheader("Checkver — So sánh 2 version (1 tệp)")
 
-    with st.expander("Hướng dẫn", expanded=True):
-        st.markdown(
-            """
-- B1: Upload CSV Admob (dùng chung với tab Manual).
-- B2: Upload Firebase (Version, Active/New users) rồi bấm Nạp Firebase.
-- B3: Bật mapping nếu muốn hiển thị ad name.
-- B4: Chọn Version A (cũ) và Version B (mới). Có thể bật “Checkver template” để chỉ highlight các nhóm phân tích.
-- B5: Bấm “Phân tích checkver” để xem phân tích chi tiết từng nhóm.
-            """
-        )
-
-    df_all = st.session_state.get("global_df")
-
     with st.expander("Dữ liệu Firebase (users/new users) — tuỳ chọn", expanded=False):
-        st.caption("Nạp file Firebase (CSV/XLSX/TXT/JSON) có cột App version và số liệu Active users, New users.")
+        st.caption("Nạp file Firebase (CSV/XLSX/TXT/JSON) có cột App version và số liệu Active/New users.")
         fb_files = st.file_uploader(
             "Upload Firebase files", type=["csv", "txt", "tsv", "xlsx", "xls", "json"], accept_multiple_files=True, key="fb_upload"
         )
@@ -1571,6 +1482,8 @@ with tabs[1]:
             else:
                 st.success(f"Đã nạp {len(st.session_state['firebase_df']):,} dòng Firebase (App+Version).")
                 st.dataframe(st.session_state["firebase_df"].head(10), use_container_width=True, hide_index=True)
+
+    df_all = st.session_state.get("global_df")
 
     if df_all is None or df_all.empty:
         st.info("Chưa có dữ liệu sau bộ lọc chung.")
@@ -1769,7 +1682,7 @@ with tabs[1]:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # ===== BẢNG THEO NGÀY =====
+            # ===== BẢNG THEO NGÀY: rev auto từ AdMob; nhập user/new user =====
             df_src_for_daily = st.session_state.get("global_df")
             fb_df_for_daily = st.session_state.get("firebase_df")
             render_daily_checkver_table(
@@ -1780,194 +1693,364 @@ with tabs[1]:
                 section_title="Bảng theo ngày (rev auto từ AdMob; nhập user/new user)"
             )
 
-            # ---------- PHÂN TÍCH CHECKVER ----------
+            # ---------- PHÂN TÍCH CHECKVER (text nhanh) ----------
             st.markdown("---")
             st.subheader("Phân tích checkver")
-            if st.button("Phân tích checkver", type="primary"):
-                st.write(f"So sánh {version_b} vs {version_a} theo danh mục: {', '.join([g[0] for g in ANALYZE_GROUPS])}")
-                base = agg.copy()
-                fb_df2 = st.session_state.get("firebase_df")
-                if isinstance(fb_df2, pd.DataFrame) and not fb_df2.empty:
-                    join_keys = [k for k in ["app", "version"] if k in base.columns and k in fb_df2.columns]
-                    if join_keys:
-                        base = base.merge(fb_df2, on=join_keys, how="left")
-                else:
-                    if "user" not in base.columns: base["user"] = np.nan
-                    if "new_user" not in base.columns: base["new_user"] = np.nan
-                if "ad_unit" not in base.columns and "ad_name" in base.columns:
-                    base["ad_unit"] = base["ad_name"]
-
-                any_res = False
+            def compute_analysis_lines(df_view_local: pd.DataFrame, va: str, vb: str) -> list:
+                base = df_view_local.copy()
+                def agg_group(ver: str, prefix: str) -> Dict[str, float]:
+                    d = base[base["version"].astype(str) == ver].copy()
+                    mask = d["ad_unit"].astype(str).str.lower().str.startswith(prefix)
+                    if "ad_name" in d.columns:
+                        mask = mask | d["ad_name"].astype(str).str.lower().str.startswith(prefix)
+                    d = d[mask]
+                    if d.empty: return {}
+                    req = pd.to_numeric(d["requests"], errors="coerce").sum(min_count=1)
+                    mreq = pd.to_numeric(d["matched_requests"], errors="coerce").sum(min_count=1)
+                    imp = pd.to_numeric(d["impressions"], errors="coerce").sum(min_count=1)
+                    clk = pd.to_numeric(d["clicks"], errors="coerce").sum(min_count=1)
+                    rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum(min_count=1)
+                    user = pd.to_numeric(d["user"], errors="coerce").sum(min_count=1)
+                    newu = pd.to_numeric(d["new_user"], errors="coerce").sum(min_count=1)
+                    mr = mreq/req if req>0 else np.nan
+                    sr = imp/req if req>0 else np.nan
+                    ctr = clk/imp if imp>0 else np.nan
+                    imp_user = imp/user if user>0 else np.nan
+                    imp_new  = imp/newu if newu>0 else np.nan
+                    req_user = req/user if user>0 else np.nan
+                    req_new  = req/newu if newu>0 else np.nan
+                    rev_user = rev/user if user>0 else np.nan
+                    rev_new  = rev/newu if newu>0 else np.nan
+                    return dict(mr=mr, sr=sr, ctr=ctr, imp_user=imp_user, imp_new=imp_new, req_user=req_user, req_new=req_new, rev_user=rev_user, rev_new=rev_new)
+                def ratio(a, b):
+                    return np.nan if (pd.isna(a) or a==0 or pd.isna(b)) else (b-a)/a
+                def pct(v): return "" if pd.isna(v) else f"{v*100:.2f}%"
+                lines = []
                 for prefix, label in ANALYZE_GROUPS:
-                    data = analyze_group(base, prefix, version_a, version_b)
-                    if data is None:
+                    A = agg_group(va, prefix)
+                    B = agg_group(vb, prefix)
+                    if not B:
                         continue
-                    any_res = True
-                    analysis_to_text(prefix, label, data, version_a, version_b)
-                if not any_res:
-                    st.info("Version B không có ads thuộc các nhóm trong danh sách phân tích.")
+                    comps = []
+                    for k, alias in [
+                        ("mr","MR"), ("sr","SR"), ("ctr","CTR"),
+                        ("imp_user","imp/user"), ("imp_new","imp/new user"),
+                        ("req_user","req/user"), ("req_new","req/new user"),
+                        ("rev_user","rev/user"), ("rev_new","rev/new user"),
+                    ]:
+                        r = ratio(A.get(k,np.nan), B.get(k,np.nan))
+                        comps.append(f"{alias}: {pct(r) if pct(r)!='' else '—'}")
+                    lines.append(f"{label}: " + ", ".join(comps))
+                if not lines:
+                    lines.append("Version B không có nhóm nằm trong danh mục phân tích.")
+                return lines
 
-            # =============== FULL CSV: Daily + Nhận xét + Chi tiết ===============
-            st.markdown("---")
-            st.subheader("Xuất CSV FULL (daily + nhận xét + chi tiết)")
-            def build_full_csv_bytes(
-                df_view: pd.DataFrame,
-                df_src_all: pd.DataFrame,
-                fb_df_opt: Optional[pd.DataFrame],
-                version_a: str,
-                version_b: str
-            ) -> bytes:
-                # 1) Daily section (dùng state inputs nếu có)
-                pair_key = _pair_key(version_a, version_b)
-                day_cols = st.session_state.get("checkver_daycols", {}).get(pair_key) or _init_daily_dates(df_src_all, version_a, version_b, n_default=4)
-                rev_map = _daily_revenue_map(df_src_all, [version_a, version_b])
-                user_total_a, _ = _fb_totals_for_version(fb_df_opt, df_src_all, version_a)
-                user_total_b, _ = _fb_totals_for_version(fb_df_opt, df_src_all, version_b)
+            analysis_lines_now = compute_analysis_lines(df_view, version_a, version_b)
+            for line in analysis_lines_now:
+                st.write("- " + line)
 
-                def collect(version: str, fb_total_user: Optional[float]):
-                    rev_list = []
-                    user_list = []
+            # ------------- SNAPSHOT: Local + Google Drive -------------
+            # Build daily state for snapshot
+            def compute_daily_state(df_src: pd.DataFrame, fb_df: Optional[pd.DataFrame], va: str, vb: str) -> dict:
+                pair_key = _pair_key(va, vb)
+                day_cols = st.session_state.get("checkver_daycols", {}).get(pair_key) or _init_daily_dates(df_src, va, vb, n_default=4)
+                rev_map = _daily_revenue_map(df_src, [va, vb])
+                user_total_a, _ = _fb_totals_for_version(fb_df, df_src, va)
+                user_total_b, _ = _fb_totals_for_version(fb_df, df_src, vb)
+
+                def collect(ver: str, fb_total_user: Optional[float]):
+                    rev_list, user_list = [], []
                     for d in day_cols:
-                        rv = st.session_state.get(f"rev_in_{version}_{d}", float(rev_map.get((version, d), 0.0)))
-                        us = st.session_state.get(f"user_in_{version}_{d}", 0.0)
+                        rv = st.session_state.get(f"rev_in_{ver}_{d}", float(rev_map.get((ver, d), 0.0)))
+                        us = st.session_state.get(f"user_in_{ver}_{d}", 0.0)
                         rev_list.append(float(to_cent(rv)))
                         user_list.append(float(us or 0.0))
                     total_rev = float(sum(to_cent(x) for x in rev_list))
                     total_user = float(fb_total_user) if fb_total_user is not None else float(np.nansum(user_list))
-                    rpu_list = [ (rev_list[i] / user_list[i]) if (user_list[i] and user_list[i] > 0) else np.nan for i in range(len(day_cols)) ]
+                    rpu_list = [(rev_list[i] / user_list[i]) if (user_list[i] and user_list[i] > 0) else np.nan for i in range(len(day_cols))]
                     rpu_total = (total_rev / total_user) if (total_user and total_user > 0) else np.nan
                     return dict(rev=rev_list, user=user_list, total_rev=total_rev, total_user=total_user, rpu_list=rpu_list, rpu_total=rpu_total)
 
-                A = collect(version_a, user_total_a)
-                B = collect(version_b, user_total_b)
+                A = collect(va, user_total_a)
+                B = collect(vb, user_total_b)
 
-                # 2) Nhận xét section: so sánh nhóm
-                def trend_ratio(a, b):
-                    if pd.isna(a) or a == 0 or pd.isna(b):
-                        return np.nan
-                    return (b - a) / a
-                def pct(v):
-                    return "" if pd.isna(v) else f"{v*100:.2f}%"
-
-                # Chuẩn bị base để phân tích
-                base = df_view.copy()
-
-                def lines_analysis() -> List[str]:
-                    lines = []
-                    def agg_group(ver: str, prefix: str) -> Dict[str, float]:
-                        d = base[base["version"].astype(str) == ver].copy()
-                        mask = d["ad_unit"].astype(str).str.lower().str.startswith(prefix)
-                        if "ad_name" in d.columns:
-                            mask = mask | d["ad_name"].astype(str).str.lower().str.startswith(prefix)
-                        d = d[mask]
-                        if d.empty: return {}
-                        req = pd.to_numeric(d["requests"], errors="coerce").sum(min_count=1)
-                        mreq = pd.to_numeric(d["matched_requests"], errors="coerce").sum(min_count=1)
-                        imp = pd.to_numeric(d["impressions"], errors="coerce").sum(min_count=1)
-                        clk = pd.to_numeric(d["clicks"], errors="coerce").sum(min_count=1)
-                        rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum(min_count=1)
-                        user = pd.to_numeric(d["user"], errors="coerce").sum(min_count=1)
-                        newu = pd.to_numeric(d["new_user"], errors="coerce").sum(min_count=1)
-                        mr = mreq/req if req>0 else np.nan
-                        sr = imp/req if req>0 else np.nan
-                        ctr = clk/imp if imp>0 else np.nan
-                        imp_user = imp/user if user>0 else np.nan
-                        imp_new = imp/newu if newu>0 else np.nan
-                        req_user = req/user if user>0 else np.nan
-                        req_new = req/newu if newu>0 else np.nan
-                        rev_user = rev/user if user>0 else np.nan
-                        rev_new = rev/newu if newu>0 else np.nan
-                        return dict(mr=mr, sr=sr, ctr=ctr, imp_user=imp_user, imp_new=imp_new, req_user=req_user, req_new=req_new, rev_user=rev_user, rev_new=rev_new)
-                    for prefix, label in ANALYZE_GROUPS:
-                        a = agg_group(version_a, prefix)
-                        b = agg_group(version_b, prefix)
-                        if not b: 
-                            continue
-                        line = f"{label}: "
-                        comps = []
-                        for k, alias in [
-                            ("mr","MR"), ("sr","SR"), ("ctr","CTR"),
-                            ("imp_user","imp/user"), ("imp_new","imp/new user"),
-                            ("req_user","req/user"), ("req_new","req/new user"),
-                            ("rev_user","rev/user"), ("rev_new","rev/new user"),
-                        ]:
-                            r = trend_ratio(a.get(k,np.nan), b.get(k,np.nan))
-                            comps.append(f"{alias} {pct(r)}" if not pd.isna(r) else f"{alias} —")
-                        lines.append(line + ", ".join(comps))
-                    if not lines:
-                        lines.append("Version B không có nhóm nằm trong danh mục phân tích.")
-                    return lines
-
-                # 3) Bảng chi tiết
-                detail_df = build_sheet_template_df(df_view)
-
-                # Ghi CSV ghép 3 section
-                buf = io.StringIO()
-                w = csv.writer(buf)
-
-                # Title
-                w.writerow([f"Checkver {version_b} vs {version_a}"])
-                w.writerow([])
-
-                # Daily block
-                w.writerow(["Bảng theo ngày"])
-                header = [""] + [ _fmt_mdy(d) for d in day_cols ] + ["", "Tổng"]
-                w.writerow(header)
-
-                # Version A rows
-                w.writerow([f"{version_a} rev"] + [f"{v:.2f}" for v in A["rev"]] + ["", f"{A['total_rev']:.2f}"])
-                w.writerow([f"{version_a} user"] + [f"{int(x):d}" if not pd.isna(x) else "" for x in A["user"]] + ["", f"{int(A['total_user']):d}" if not pd.isna(A["total_user"]) else ""])
-                w.writerow([f"{version_a} rev/user"] + [("" if pd.isna(x) else f"{x:.6f}") for x in A["rpu_list"]] + ["", ("" if pd.isna(A["rpu_total"]) else f"{A['rpu_total']:.6f}")])
-
-                w.writerow([])
-
-                # Version B rows
-                w.writerow([f"{version_b} rev"] + [f"{v:.2f}" for v in B["rev"]] + ["", f"{B['total_rev']:.2f}"])
-                w.writerow([f"{version_b} user"] + [f"{int(x):d}" if not pd.isna(x) else "" for x in B["user"]] + ["", f"{int(B['total_user']):d}" if not pd.isna(B["total_user"]) else ""])
-                w.writerow([f"{version_b} rev/user"] + [("" if pd.isna(x) else f"{x:.6f}") for x in B["rpu_list"]] + ["", ("" if pd.isna(B["rpu_total"]) else f"{B['rpu_total']:.6f}")])
-
-                # Change row
-                w.writerow([])
                 pct_list = []
                 for i in range(len(day_cols)):
                     a = A["rpu_list"][i]; b = B["rpu_list"][i]
-                    pct_val = ((b - a) / a) if (pd.notna(a) and a > 0 and pd.notna(b)) else np.nan
-                    pct_list.append("" if pd.isna(pct_val) else f"{pct_val*100:.2f}%")
-                tot_pct = ((B["rpu_total"] - A["rpu_total"]) / A["rpu_total"]) if (pd.notna(A["rpu_total"]) and A["rpu_total"] > 0 and pd.notna(B["rpu_total"])) else np.nan
-                w.writerow([f"Thay đổi rev/user {version_b} so {version_a} (%)"] + pct_list + ["", ("" if pd.isna(tot_pct) else f"{tot_pct*100:.2f}%")])
+                    pct = ((b - a) / a) if (pd.notna(a) and a > 0 and pd.notna(b)) else np.nan
+                    pct_list.append(pct)
+                pct_total = ((B["rpu_total"] - A["rpu_total"]) / A["rpu_total"]) if (pd.notna(A["rpu_total"]) and A["rpu_total"] > 0 and pd.notna(B["rpu_total"])) else np.nan
 
-                # Nhận xét
-                w.writerow([])
-                w.writerow(["Nhận xét checkver"])
-                for line in lines_analysis():
-                    w.writerow([line])
+                return dict(
+                    day_cols=day_cols,
+                    version_a=A,
+                    version_b=B,
+                    change_pct_per_day=pct_list,
+                    change_pct_total=pct_total,
+                )
 
-                # Detail table
-                w.writerow([])
-                w.writerow(["Bảng chi tiết ad unit"])
-                w.writerow(list(detail_df.columns))
-                for _, r in detail_df.iterrows():
-                    row = []
-                    for c in detail_df.columns:
-                        v = r[c]
-                        if pd.isna(v):
-                            row.append("")
+            def build_snapshot_obj(snapshot_name: str, df_view_local: pd.DataFrame, va: str, vb: str,
+                                   df_src: pd.DataFrame, fb_df: Optional[pd.DataFrame]) -> dict:
+                detail_df = build_sheet_template_df(df_view_local)
+                daily = compute_daily_state(df_src, fb_df, va, vb)
+                snap = {
+                    "meta": {
+                        "name": snapshot_name,
+                        "created_at": datetime.now().isoformat(timespec="seconds"),
+                        "version_a": va, "version_b": vb,
+                        "row_count": int(len(df_view_local)),
+                    },
+                    "daily": daily,
+                    "analysis_lines": analysis_lines_now,
+                    "table": {
+                        "columns": list(df_view_local.columns),
+                        "rows": df_view_local.fillna("").astype(object).astype(str).values.tolist(),
+                    },
+                    "detail_table": {
+                        "columns": list(detail_df.columns),
+                        "rows": detail_df.fillna("").astype(object).astype(str).values.tolist(),
+                    },
+                }
+                return snap
+
+            def save_snapshot_local(snapshot: dict) -> str:
+                _ensure_snap_dir()
+                name = snapshot.get("meta", {}).get("name") or datetime.now().strftime("snapshot_%Y%m%d_%H%M%S")
+                path = _snap_path(name)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(snapshot, f, ensure_ascii=False, indent=2)
+                return path
+
+            def list_snapshots_local() -> List[str]:
+                _ensure_snap_dir()
+                return sorted([f for f in os.listdir(SNAPSHOT_DIR) if f.lower().endswith(".json")])
+
+            def load_snapshot_local(file_name: str) -> Optional[dict]:
+                path = os.path.join(SNAPSHOT_DIR, file_name)
+                if not os.path.isfile(path): return None
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+
+            def render_snapshot_view(snapshot: dict):
+                if not snapshot:
+                    st.info("Chưa có snapshot.")
+                    return
+                meta = snapshot.get("meta", {})
+                st.caption(f"Snapshot: {meta.get('name','')} | {meta.get('created_at','')} | {meta.get('version_a','?')} → {meta.get('version_b','?')}")
+                dl = snapshot.get("daily", {})
+                days = dl.get("day_cols", [])
+                def fmt_pct(v): return "" if pd.isna(v) else f"{v*100:.2f}%"
+                def fmt2(v): return "" if pd.isna(v) else f"{float(v):.2f}"
+                def fmt6(v): return "" if pd.isna(v) else f"{float(v):.6f}"
+                def fmt0(v):
+                    try:
+                        return "" if pd.isna(v) else f"{int(round(float(v))):d}"
+                    except Exception:
+                        return ""
+                st.markdown("Bảng theo ngày (snapshot)")
+                a = dl.get("version_a", {})
+                b = dl.get("version_b", {})
+                rows = []
+                rows.append([f"{meta.get('version_a','?')} rev"] + [fmt2(v) for v in a.get("rev", [])] + [fmt2(a.get("total_rev", np.nan))])
+                rows.append([f"{meta.get('version_a','?')} user"] + [fmt0(v) for v in a.get("user", [])] + [fmt0(a.get("total_user", np.nan))])
+                rows.append([f"{meta.get('version_a','?')} rev/user"] + [fmt6(v) for v in a.get("rpu_list", [])] + [fmt6(a.get("rpu_total", np.nan))])
+                rows.append([""])
+                rows.append([f"{meta.get('version_b','?')} rev"] + [fmt2(v) for v in b.get("rev", [])] + [fmt2(b.get("total_rev", np.nan))])
+                rows.append([f"{meta.get('version_b','?')} user"] + [fmt0(v) for v in b.get("user", [])] + [fmt0(b.get("total_user", np.nan))])
+                rows.append([f"{meta.get('version_b','?')} rev/user"] + [fmt6(v) for v in b.get("rpu_list", [])] + [fmt6(b.get("rpu_total", np.nan))])
+                rows.append([""])
+                rows.append([f"Thay đổi rev/user {meta.get('version_b','?')} so {meta.get('version_a','?')} (%)"] + [fmt_pct(v) for v in dl.get("change_pct_per_day", [])] + [fmt_pct(dl.get("change_pct_total", np.nan))])
+                df_daily = pd.DataFrame(rows)
+                st.dataframe(df_daily, use_container_width=True, hide_index=True)
+
+                st.markdown("Nhận xét checkver")
+                for line in snapshot.get("analysis_lines", []):
+                    st.write(f"- {line}")
+
+                st.markdown("Bảng phân tích chỉ số (theo snapshot)")
+                tbl = snapshot.get("table", {})
+                if tbl:
+                    df_tbl = pd.DataFrame(tbl.get("rows", []), columns=tbl.get("columns", []))
+                    st.dataframe(df_tbl, use_container_width=True, hide_index=True, height=400)
+
+                st.markdown("Bảng chi tiết ad unit (theo snapshot)")
+                det = snapshot.get("detail_table", {})
+                if det:
+                    df_det = pd.DataFrame(det.get("rows", []), columns=det.get("columns", []))
+                    st.dataframe(df_det, use_container_width=True, hide_index=True, height=400)
+
+            def restore_snapshot_to_ui(snapshot: dict):
+                meta = snapshot.get("meta", {})
+                va, vb = str(meta.get("version_a","")), str(meta.get("version_b",""))
+                dl = snapshot.get("daily", {})
+                days = dl.get("day_cols", [])
+                pair_key = _pair_key(va, vb)
+                st.session_state.setdefault("checkver_daycols", {})
+                st.session_state["checkver_daycols"][pair_key] = days
+                def set_list(prefix: str, ver: str, arr: list):
+                    for i, d in enumerate(days):
+                        key = f"{prefix}_{ver}_{d}"
+                        st.session_state[key] = float(arr[i]) if i < len(arr) else 0.0
+                A = dl.get("version_a", {})
+                B = dl.get("version_b", {})
+                set_list("rev_in", va, A.get("rev", []))
+                set_list("user_in", va, A.get("user", []))
+                set_list("rev_in", vb, B.get("rev", []))
+                set_list("user_in", vb, B.get("user", []))
+                st.toast("Đã khôi phục inputs và dải ngày. App sẽ tải lại…")
+                safe_rerun()
+
+            # ---- Google Drive helpers (lazy import) ----
+            def _check_drive_available() -> Tuple[bool, Optional[str]]:
+                if st.session_state.get("gdrive_creds_json") is None or not st.session_state.get("gdrive_folder_id"):
+                    return False, "Thiếu Service Account JSON hoặc Folder ID."
+                try:
+                    from google.oauth2 import service_account  # noqa
+                    from googleapiclient.discovery import build  # noqa
+                    from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload  # noqa
+                    return True, None
+                except Exception as e:
+                    return False, "Thiếu thư viện Google API. Cài: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib"
+
+            def _get_drive_service():
+                from google.oauth2 import service_account
+                from googleapiclient.discovery import build
+                info = json.loads(st.session_state["gdrive_creds_json"].decode("utf-8"))
+                creds = service_account.Credentials.from_service_account_info(info, scopes=GDRIVE_SCOPES)
+                return build("drive", "v3", credentials=creds)
+
+            def gdrive_upload_snapshot(snapshot: dict, name: str, folder_id: str) -> str:
+                from googleapiclient.http import MediaIoBaseUpload
+                service = _get_drive_service()
+                media = MediaIoBaseUpload(io.BytesIO(json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")),
+                                          mimetype="application/json", resumable=False)
+                file_metadata = {"name": f"{_slug(name)}.json", "parents": [folder_id]}
+                file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+                return file.get("id")
+
+            def gdrive_list_snapshots(folder_id: str) -> List[Dict[str, str]]:
+                service = _get_drive_service()
+                q = f"'{folder_id}' in parents and mimeType='application/json'"
+                res = service.files().list(q=q, orderBy="modifiedTime desc", fields="files(id,name,modifiedTime,size)").execute()
+                return res.get("files", [])
+
+            def gdrive_download_snapshot(file_id: str) -> dict:
+                from googleapiclient.http import MediaIoBaseDownload
+                service = _get_drive_service()
+                request = service.files().get_media(fileId=file_id)
+                buf = io.BytesIO()
+                downloader = MediaIoBaseDownload(buf, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                buf.seek(0)
+                return json.loads(buf.read().decode("utf-8"))
+
+            def gdrive_delete(file_id: str):
+                service = _get_drive_service()
+                service.files().delete(fileId=file_id).execute()
+
+            # ===== Snapshot UI =====
+            st.markdown("---")
+            st.subheader("Snapshot Checkver (lưu và xem lại)")
+
+            default_snap_name = f"checkver_{version_a}_vs_{version_b}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}"
+            snap_name = st.text_input("Tên snapshot", value=default_snap_name)
+
+            c1, c2, c3 = st.columns([0.25, 0.25, 0.5])
+            with c1:
+                if st.button("Lưu snapshot (chọn nơi lưu)", type="primary", use_container_width=True):
+                    snap = build_snapshot_obj(snap_name, df_view, version_a, version_b, st.session_state.get("global_df"), st.session_state.get("firebase_df"))
+                    if st.session_state["snap_storage"] == "Local":
+                        path = save_snapshot_local(snap)
+                        st.success(f"Đã lưu local: {path}")
+                    else:
+                        ok, msg = _check_drive_available()
+                        if not ok:
+                            st.error(msg)
                         else:
-                            row.append(str(v))
-                    w.writerow(row)
+                            try:
+                                file_id = gdrive_upload_snapshot(snap, snap_name, st.session_state["gdrive_folder_id"])
+                                st.success(f"Đã lưu lên Google Drive (fileId={file_id})")
+                            except Exception as e:
+                                st.error(f"Lỗi upload Drive: {e}")
+            with c2:
+                snap_preview = build_snapshot_obj(snap_name, df_view, version_a, version_b, st.session_state.get("global_df"), st.session_state.get("firebase_df"))
+                st.download_button("Tải snapshot (.json)", data=json.dumps(snap_preview, ensure_ascii=False, indent=2).encode("utf-8"),
+                                   file_name=f"{_slug(snap_name)}.json", mime="application/json", use_container_width=True)
+            with c3:
+                up_json = st.file_uploader("Tải 1 snapshot (.json) để xem/khôi phục", type=["json"])
+                if up_json is not None:
+                    try:
+                        snap_obj = json.loads(up_json.getvalue().decode("utf-8"))
+                        st.info("Xem snapshot (upload):")
+                        render_snapshot_view(snap_obj)
+                        if st.button("Khôi phục (từ file upload)", use_container_width=True):
+                            restore_snapshot_to_ui(snap_obj)
+                    except Exception as e:
+                        st.error(f"File không hợp lệ: {e}")
 
-                return buf.getvalue().encode("utf-8-sig")
-
-            full_csv = build_full_csv_bytes(
-                df_view=df_view,
-                df_src_all=st.session_state.get("global_df"),
-                fb_df_opt=st.session_state.get("firebase_df"),
-                version_a=version_a,
-                version_b=version_b,
-            )
-            st.download_button(
-                "Xuất CSV FULL (daily + nhận xét + chi tiết)",
-                data=full_csv,
-                file_name=f"checkver_full_{version_a}_vs_{version_b}.csv",
-                mime="text/csv",
-            )
+            st.markdown("—")
+            if st.session_state["snap_storage"] == "Local":
+                st.caption("Danh sách snapshot (Local folder snapshots/)")
+                available = list_snapshots_local()
+                if not available:
+                    st.write("Chưa có snapshot nào.")
+                else:
+                    sel = st.selectbox("Chọn snapshot (local)", options=available)
+                    btns = st.columns([0.25, 0.25, 0.25, 0.25])
+                    with btns[0]:
+                        if st.button("Xem", use_container_width=True):
+                            render_snapshot_view(load_snapshot_local(sel))
+                    with btns[1]:
+                        if st.button("Khôi phục", use_container_width=True):
+                            snap = load_snapshot_local(sel)
+                            if snap: restore_snapshot_to_ui(snap)
+                    with btns[2]:
+                        snap = load_snapshot_local(sel)
+                        if snap:
+                            st.download_button("Tải snapshot (local)", data=json.dumps(snap, ensure_ascii=False, indent=2).encode("utf-8"),
+                                               file_name=sel, mime="application/json", use_container_width=True)
+                    with btns[3]:
+                        if st.button("Xoá", use_container_width=True):
+                            try:
+                                os.remove(os.path.join(SNAPSHOT_DIR, sel))
+                                st.success("Đã xoá.")
+                                safe_rerun()
+                            except Exception as e:
+                                st.error(f"Không xoá được: {e}")
+            else:
+                st.caption("Danh sách snapshot trên Google Drive")
+                ok, msg = _check_drive_available()
+                if not ok:
+                    st.warning(msg)
+                else:
+                    try:
+                        files = gdrive_list_snapshots(st.session_state["gdrive_folder_id"])
+                        if not files:
+                            st.write("Chưa có snapshot nào.")
+                        else:
+                            names = [f"{f['name']} | {f.get('modifiedTime','')}" for f in files]
+                            idx = st.selectbox("Chọn snapshot (Drive)", options=list(range(len(files))), format_func=lambda i: names[i])
+                            file_sel = files[idx]
+                            b1, b2, b3, b4 = st.columns([0.25, 0.25, 0.25, 0.25])
+                            with b1:
+                                if st.button("Xem (Drive)", use_container_width=True):
+                                    snap = gdrive_download_snapshot(file_sel["id"])
+                                    render_snapshot_view(snap)
+                            with b2:
+                                if st.button("Khôi phục (Drive)", use_container_width=True):
+                                    snap = gdrive_download_snapshot(file_sel["id"])
+                                    restore_snapshot_to_ui(snap)
+                            with b3:
+                                snap = gdrive_download_snapshot(file_sel["id"])
+                                st.download_button("Tải snapshot (Drive)", data=json.dumps(snap, ensure_ascii=False, indent=2).encode("utf-8"),
+                                                   file_name=file_sel["name"], mime="application/json", use_container_width=True)
+                            with b4:
+                                if st.button("Xoá (Drive)", use_container_width=True):
+                                    try:
+                                        gdrive_delete(file_sel["id"])
+                                        st.success("Đã xoá trên Drive.")
+                                        safe_rerun()
+                                    except Exception as e:
+                                        st.error(f"Lỗi xoá: {e}")
