@@ -5,6 +5,7 @@ import unicodedata
 from typing import List, Dict, Optional, Tuple, Set
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+import csv  # <-- dùng ghi CSV từng dòng để ghép nhiều section
 
 import numpy as np
 import pandas as pd
@@ -1223,11 +1224,10 @@ def format_num2(x: float) -> str:
 def format_num6(x: float) -> str:
     return "—" if pd.isna(x) else f"{x:,.6f}"
 
-# Phân tích nhóm: chỉ cộng 4 chỉ số per-user/new-user; showrate liệt kê theo từng ad unit
+# Phân tích nhóm
 def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict]:
     if agg_df is None or agg_df.empty:
         return None
-
     item_col = "ad_name" if "ad_name" in agg_df.columns else "ad_unit"
 
     def filt(d: pd.DataFrame, ver: str) -> pd.DataFrame:
@@ -1275,14 +1275,8 @@ def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: 
         return out
 
     data = {
-        "A": {
-            "sums": sums_per_user(A),
-            "by_item": per_item_showrate_requests(A),
-        },
-        "B": {
-            "sums": sums_per_user(B),
-            "by_item": per_item_showrate_requests(B),
-        },
+        "A": {"sums": sums_per_user(A), "by_item": per_item_showrate_requests(A)},
+        "B": {"sums": sums_per_user(B), "by_item": per_item_showrate_requests(B)},
         "item_col": item_col,
     }
     return data
@@ -1302,7 +1296,6 @@ def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, versio
         return str(v)
 
     st.markdown(f"• Nhóm: {label} (prefix: {prefix})")
-
     for title, va, vb, kind in sums_pairs:
         if pd.isna(va) and pd.isna(vb):
             continue
@@ -1337,10 +1330,9 @@ def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, versio
                 f"{'<' if trend=='kém hơn' else ('>' if trend=='tốt hơn' else '=')} "
                 f"{version_b} {format_pct(srB)} (req {int(rqB) if pd.notna(rqB) else '—'}) — {trend}."
             )
-
     st.divider()
 
-# ------- Daily compare helpers (Checkver) với Decimal chuẩn cent -------
+# ------- Daily compare (Decimal cent) -------
 def _pair_key(ver_a: str, ver_b: str) -> str:
     return f"{str(ver_a)}__{str(ver_b)}"
 
@@ -1399,12 +1391,10 @@ def _daily_revenue_map(df_src: pd.DataFrame, version_list: List[str]) -> Dict[Tu
     d["date"] = pd.to_datetime(d["date"], errors="coerce")
     d = d[d["date"].notna()]
     d["date_iso"] = d["date"].dt.date.astype(str)
-
     for _, r in d.iterrows():
         key = (str(r["version"]), str(r["date_iso"]))
         amount = to_cent(r.get("estimated_earnings", 0))
         out_dec[key] = out_dec.get(key, Decimal("0.00")) + amount
-
     return {k: float(v) for k, v in out_dec.items()}
 
 def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, version: str) -> tuple:
@@ -1779,7 +1769,7 @@ with tabs[1]:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # ===== BẢNG THEO NGÀY: rev auto từ AdMob; nhập user/new user; so sánh % theo rev/user =====
+            # ===== BẢNG THEO NGÀY =====
             df_src_for_daily = st.session_state.get("global_df")
             fb_df_for_daily = st.session_state.get("firebase_df")
             render_daily_checkver_table(
@@ -1795,7 +1785,6 @@ with tabs[1]:
             st.subheader("Phân tích checkver")
             if st.button("Phân tích checkver", type="primary"):
                 st.write(f"So sánh {version_b} vs {version_a} theo danh mục: {', '.join([g[0] for g in ANALYZE_GROUPS])}")
-
                 base = agg.copy()
                 fb_df2 = st.session_state.get("firebase_df")
                 if isinstance(fb_df2, pd.DataFrame) and not fb_df2.empty:
@@ -1805,7 +1794,6 @@ with tabs[1]:
                 else:
                     if "user" not in base.columns: base["user"] = np.nan
                     if "new_user" not in base.columns: base["new_user"] = np.nan
-
                 if "ad_unit" not in base.columns and "ad_name" in base.columns:
                     base["ad_unit"] = base["ad_name"]
 
@@ -1816,18 +1804,170 @@ with tabs[1]:
                         continue
                     any_res = True
                     analysis_to_text(prefix, label, data, version_a, version_b)
-
                 if not any_res:
                     st.info("Version B không có ads thuộc các nhóm trong danh sách phân tích.")
 
-            # ===== Xuất CSV template (để copy sang Google Sheet) =====
+            # =============== FULL CSV: Daily + Nhận xét + Chi tiết ===============
             st.markdown("---")
-            st.subheader("Xuất CSV (template Google Sheet)")
-            template_df = build_sheet_template_df(df_view)
-            csv_bytes = template_df.to_csv(index=False, encoding="utf-8-sig")
+            st.subheader("Xuất CSV FULL (daily + nhận xét + chi tiết)")
+            def build_full_csv_bytes(
+                df_view: pd.DataFrame,
+                df_src_all: pd.DataFrame,
+                fb_df_opt: Optional[pd.DataFrame],
+                version_a: str,
+                version_b: str
+            ) -> bytes:
+                # 1) Daily section (dùng state inputs nếu có)
+                pair_key = _pair_key(version_a, version_b)
+                day_cols = st.session_state.get("checkver_daycols", {}).get(pair_key) or _init_daily_dates(df_src_all, version_a, version_b, n_default=4)
+                rev_map = _daily_revenue_map(df_src_all, [version_a, version_b])
+                user_total_a, _ = _fb_totals_for_version(fb_df_opt, df_src_all, version_a)
+                user_total_b, _ = _fb_totals_for_version(fb_df_opt, df_src_all, version_b)
+
+                def collect(version: str, fb_total_user: Optional[float]):
+                    rev_list = []
+                    user_list = []
+                    for d in day_cols:
+                        rv = st.session_state.get(f"rev_in_{version}_{d}", float(rev_map.get((version, d), 0.0)))
+                        us = st.session_state.get(f"user_in_{version}_{d}", 0.0)
+                        rev_list.append(float(to_cent(rv)))
+                        user_list.append(float(us or 0.0))
+                    total_rev = float(sum(to_cent(x) for x in rev_list))
+                    total_user = float(fb_total_user) if fb_total_user is not None else float(np.nansum(user_list))
+                    rpu_list = [ (rev_list[i] / user_list[i]) if (user_list[i] and user_list[i] > 0) else np.nan for i in range(len(day_cols)) ]
+                    rpu_total = (total_rev / total_user) if (total_user and total_user > 0) else np.nan
+                    return dict(rev=rev_list, user=user_list, total_rev=total_rev, total_user=total_user, rpu_list=rpu_list, rpu_total=rpu_total)
+
+                A = collect(version_a, user_total_a)
+                B = collect(version_b, user_total_b)
+
+                # 2) Nhận xét section: so sánh nhóm
+                def trend_ratio(a, b):
+                    if pd.isna(a) or a == 0 or pd.isna(b):
+                        return np.nan
+                    return (b - a) / a
+                def pct(v):
+                    return "" if pd.isna(v) else f"{v*100:.2f}%"
+
+                # Chuẩn bị base để phân tích
+                base = df_view.copy()
+
+                def lines_analysis() -> List[str]:
+                    lines = []
+                    def agg_group(ver: str, prefix: str) -> Dict[str, float]:
+                        d = base[base["version"].astype(str) == ver].copy()
+                        mask = d["ad_unit"].astype(str).str.lower().str.startswith(prefix)
+                        if "ad_name" in d.columns:
+                            mask = mask | d["ad_name"].astype(str).str.lower().str.startswith(prefix)
+                        d = d[mask]
+                        if d.empty: return {}
+                        req = pd.to_numeric(d["requests"], errors="coerce").sum(min_count=1)
+                        mreq = pd.to_numeric(d["matched_requests"], errors="coerce").sum(min_count=1)
+                        imp = pd.to_numeric(d["impressions"], errors="coerce").sum(min_count=1)
+                        clk = pd.to_numeric(d["clicks"], errors="coerce").sum(min_count=1)
+                        rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum(min_count=1)
+                        user = pd.to_numeric(d["user"], errors="coerce").sum(min_count=1)
+                        newu = pd.to_numeric(d["new_user"], errors="coerce").sum(min_count=1)
+                        mr = mreq/req if req>0 else np.nan
+                        sr = imp/req if req>0 else np.nan
+                        ctr = clk/imp if imp>0 else np.nan
+                        imp_user = imp/user if user>0 else np.nan
+                        imp_new = imp/newu if newu>0 else np.nan
+                        req_user = req/user if user>0 else np.nan
+                        req_new = req/newu if newu>0 else np.nan
+                        rev_user = rev/user if user>0 else np.nan
+                        rev_new = rev/newu if newu>0 else np.nan
+                        return dict(mr=mr, sr=sr, ctr=ctr, imp_user=imp_user, imp_new=imp_new, req_user=req_user, req_new=req_new, rev_user=rev_user, rev_new=rev_new)
+                    for prefix, label in ANALYZE_GROUPS:
+                        a = agg_group(version_a, prefix)
+                        b = agg_group(version_b, prefix)
+                        if not b: 
+                            continue
+                        line = f"{label}: "
+                        comps = []
+                        for k, alias in [
+                            ("mr","MR"), ("sr","SR"), ("ctr","CTR"),
+                            ("imp_user","imp/user"), ("imp_new","imp/new user"),
+                            ("req_user","req/user"), ("req_new","req/new user"),
+                            ("rev_user","rev/user"), ("rev_new","rev/new user"),
+                        ]:
+                            r = trend_ratio(a.get(k,np.nan), b.get(k,np.nan))
+                            comps.append(f"{alias} {pct(r)}" if not pd.isna(r) else f"{alias} —")
+                        lines.append(line + ", ".join(comps))
+                    if not lines:
+                        lines.append("Version B không có nhóm nằm trong danh mục phân tích.")
+                    return lines
+
+                # 3) Bảng chi tiết
+                detail_df = build_sheet_template_df(df_view)
+
+                # Ghi CSV ghép 3 section
+                buf = io.StringIO()
+                w = csv.writer(buf)
+
+                # Title
+                w.writerow([f"Checkver {version_b} vs {version_a}"])
+                w.writerow([])
+
+                # Daily block
+                w.writerow(["Bảng theo ngày"])
+                header = [""] + [ _fmt_mdy(d) for d in day_cols ] + ["", "Tổng"]
+                w.writerow(header)
+
+                # Version A rows
+                w.writerow([f"{version_a} rev"] + [f"{v:.2f}" for v in A["rev"]] + ["", f"{A['total_rev']:.2f}"])
+                w.writerow([f"{version_a} user"] + [f"{int(x):d}" if not pd.isna(x) else "" for x in A["user"]] + ["", f"{int(A['total_user']):d}" if not pd.isna(A["total_user"]) else ""])
+                w.writerow([f"{version_a} rev/user"] + [("" if pd.isna(x) else f"{x:.6f}") for x in A["rpu_list"]] + ["", ("" if pd.isna(A["rpu_total"]) else f"{A['rpu_total']:.6f}")])
+
+                w.writerow([])
+
+                # Version B rows
+                w.writerow([f"{version_b} rev"] + [f"{v:.2f}" for v in B["rev"]] + ["", f"{B['total_rev']:.2f}"])
+                w.writerow([f"{version_b} user"] + [f"{int(x):d}" if not pd.isna(x) else "" for x in B["user"]] + ["", f"{int(B['total_user']):d}" if not pd.isna(B["total_user"]) else ""])
+                w.writerow([f"{version_b} rev/user"] + [("" if pd.isna(x) else f"{x:.6f}") for x in B["rpu_list"]] + ["", ("" if pd.isna(B["rpu_total"]) else f"{B['rpu_total']:.6f}")])
+
+                # Change row
+                w.writerow([])
+                pct_list = []
+                for i in range(len(day_cols)):
+                    a = A["rpu_list"][i]; b = B["rpu_list"][i]
+                    pct_val = ((b - a) / a) if (pd.notna(a) and a > 0 and pd.notna(b)) else np.nan
+                    pct_list.append("" if pd.isna(pct_val) else f"{pct_val*100:.2f}%")
+                tot_pct = ((B["rpu_total"] - A["rpu_total"]) / A["rpu_total"]) if (pd.notna(A["rpu_total"]) and A["rpu_total"] > 0 and pd.notna(B["rpu_total"])) else np.nan
+                w.writerow([f"Thay đổi rev/user {version_b} so {version_a} (%)"] + pct_list + ["", ("" if pd.isna(tot_pct) else f"{tot_pct*100:.2f}%")])
+
+                # Nhận xét
+                w.writerow([])
+                w.writerow(["Nhận xét checkver"])
+                for line in lines_analysis():
+                    w.writerow([line])
+
+                # Detail table
+                w.writerow([])
+                w.writerow(["Bảng chi tiết ad unit"])
+                w.writerow(list(detail_df.columns))
+                for _, r in detail_df.iterrows():
+                    row = []
+                    for c in detail_df.columns:
+                        v = r[c]
+                        if pd.isna(v):
+                            row.append("")
+                        else:
+                            row.append(str(v))
+                    w.writerow(row)
+
+                return buf.getvalue().encode("utf-8-sig")
+
+            full_csv = build_full_csv_bytes(
+                df_view=df_view,
+                df_src_all=st.session_state.get("global_df"),
+                fb_df_opt=st.session_state.get("firebase_df"),
+                version_a=version_a,
+                version_b=version_b,
+            )
             st.download_button(
-                label="Xuất CSV template (App, App ver, Ad unit, Ad name, …)",
-                data=csv_bytes,
-                file_name=f"checkver_template_{version_a}_vs_{version_b}.csv",
+                "Xuất CSV FULL (daily + nhận xét + chi tiết)",
+                data=full_csv,
+                file_name=f"checkver_full_{version_a}_vs_{version_b}.csv",
                 mime="text/csv",
             )
