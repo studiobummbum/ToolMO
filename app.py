@@ -4,6 +4,7 @@ import re
 import unicodedata
 from typing import List, Dict, Optional, Tuple, Set
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 import numpy as np
 import pandas as pd
@@ -1175,7 +1176,7 @@ def format_num2(x: float) -> str:
 def format_num6(x: float) -> str:
     return "—" if pd.isna(x) else f"{x:,.6f}"
 
-# Phân tích nhóm
+# Phân tích nhóm: chỉ cộng 4 chỉ số per-user/new-user; showrate liệt kê theo từng ad unit
 def analyze_group(agg_df: pd.DataFrame, prefix: str, version_a: str, version_b: str) -> Optional[Dict]:
     if agg_df is None or agg_df.empty:
         return None
@@ -1292,9 +1293,28 @@ def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, versio
 
     st.divider()
 
-# -------------------- Daily table helpers --------------------
-def _pair_key(a: str, b: str) -> str:
-    return f"{str(a)}__{str(b)}"
+# ------- Daily compare helpers (Checkver) với Decimal chuẩn cent -------
+def _pair_key(ver_a: str, ver_b: str) -> str:
+    return f"{str(ver_a)}__{str(ver_b)}"
+
+def to_cent(val) -> Decimal:
+    if val is None:
+        return Decimal("0.00")
+    s = str(val).strip()
+    if s == "" or s.lower() in {"nan", "none", "-"}:
+        return Decimal("0.00")
+    if "." in s and "," in s:
+        s = s.replace(",", "")
+    if "," in s and "." not in s:
+        s = s.replace(",", ".")
+    try:
+        d = Decimal(s)
+    except (InvalidOperation, ValueError):
+        try:
+            d = Decimal(str(float(val)))
+        except Exception:
+            d = Decimal("0.00")
+    return d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 def _fmt_mdy(date_iso: str) -> str:
     dt = pd.to_datetime(date_iso, errors="coerce")
@@ -1302,7 +1322,7 @@ def _fmt_mdy(date_iso: str) -> str:
         return str(date_iso)
     return f"{dt.month}/{dt.day}/{dt.year}"
 
-def _init_daily_dates(df_src: pd.DataFrame, version_a: str, version_b: str, n_default: int = 4) -> List[str]:
+def _init_daily_dates(df_src: pd.DataFrame, version_a: str, version_b: str, n_default: int = 4) -> list:
     if df_src is None or df_src.empty or "date" not in df_src.columns or "version" not in df_src.columns:
         today = pd.Timestamp.today().normalize()
         base = [(today - pd.Timedelta(days=i)).date().isoformat() for i in range(n_default)][::-1]
@@ -1320,24 +1340,27 @@ def _init_daily_dates(df_src: pd.DataFrame, version_a: str, version_b: str, n_de
     return [x.isoformat() for x in pick]
 
 def _daily_revenue_map(df_src: pd.DataFrame, version_list: List[str]) -> Dict[Tuple[str, str], float]:
-    out: Dict[Tuple[str, str], float] = {}
+    out_dec: Dict[Tuple[str, str], Decimal] = {}
     if df_src is None or df_src.empty:
-        return out
+        return {}
     need = {"version", "date", "estimated_earnings"}
     if not need.issubset(set(df_src.columns)):
-        return out
+        return {}
     d = df_src.copy()
+    d["version"] = d["version"].astype(str)
+    d = d[d["version"].isin([str(v) for v in version_list])]
     d["date"] = pd.to_datetime(d["date"], errors="coerce")
     d = d[d["date"].notna()]
     d["date_iso"] = d["date"].dt.date.astype(str)
-    d["version"] = d["version"].astype(str)
-    d = d[d["version"].isin([str(v) for v in version_list])]
-    g = d.groupby(["version", "date_iso"], dropna=False)["estimated_earnings"].sum(min_count=1).reset_index()
-    for _, r in g.iterrows():
-        out[(str(r["version"]), str(r["date_iso"]))] = float(r["estimated_earnings"] or 0.0)
-    return out
 
-def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, version: str) -> Tuple[Optional[float], Optional[float]]:
+    for _, r in d.iterrows():
+        key = (str(r["version"]), str(r["date_iso"]))
+        amount = to_cent(r.get("estimated_earnings", 0))
+        out_dec[key] = out_dec.get(key, Decimal("0.00")) + amount
+
+    return {k: float(v) for k, v in out_dec.items()}
+
+def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, version: str) -> tuple:
     if not isinstance(fb_df, pd.DataFrame) or fb_df.empty or "version" not in fb_df.columns:
         return (None, None)
     v = str(version)
@@ -1366,6 +1389,7 @@ def render_daily_checkver_table(
     st.markdown("---")
     with st.expander(section_title, expanded=False):
         pair_key = _pair_key(version_a, version_b)
+        st.session_state.setdefault("checkver_daycols", {})
         if pair_key not in st.session_state["checkver_daycols"]:
             st.session_state["checkver_daycols"][pair_key] = _init_daily_dates(df_src, version_a, version_b, n_default=4)
 
@@ -1399,20 +1423,21 @@ def render_daily_checkver_table(
             # Row 1: rev
             row1 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
             row1[0].markdown("rev")
-            total_rev = 0.0
+            total_rev_dec = Decimal("0.00")
             rev_inputs = []
             for i, d in enumerate(day_cols):
                 default_rev = float(rev_map.get((str(version), d), 0.0))
                 val = row1[1+i].number_input(
                     label=f"rev_{version}_{d}",
-                    value=float(default_rev),
+                    value=float(to_cent(default_rev)),
                     step=0.01,
                     format="%.2f",
                     key=f"rev_in_{version}_{d}",
                 )
                 rev_inputs.append(val)
-                total_rev += (val or 0.0)
+                total_rev_dec += to_cent(val)
             row1[1+n].markdown(" ")
+            total_rev = float(total_rev_dec)
             row1[2+n].markdown(f"**{total_rev:,.2f}**")
 
             # Row 2: user
@@ -1458,7 +1483,7 @@ def render_daily_checkver_table(
         st.markdown(" ")
         data_b = block_for_version(version_b, user_total_b, tint="#FFF2CC")
 
-        # Row cuối: % thay đổi rev/user (B so A)
+        # Row cuối: % thay đổi rev/user (B so A) — xanh nếu dương, cam nếu âm
         st.markdown(" ")
         cols_change = st.columns([1] + [1]*n + [0.2, 1, 0.8])
         cols_change[0].markdown(f"**Thay đổi rev/user {version_b} so {version_a} (%)**")
@@ -1466,20 +1491,19 @@ def render_daily_checkver_table(
         def pct_badge(pct_val: float) -> str:
             if pd.isna(pct_val):
                 return "—"
-            color = "#22c55e" if pct_val > 0 else "#fb923c" if pct_val < 0 else "#e2e8f0"
-            txt = f"{(pct_val*100):.2f}%"
-            return f"<div style='background:{color};color:#111827;padding:2px 6px;border-radius:4px;text-align:center'>{txt}</div>"
+            color = "#22c55e" if pct_val > 0 else ("#fb923c" if pct_val < 0 else "#e2e8f0")
+            return f"<div style='background:{color};color:#111827;padding:2px 6px;border-radius:4px;text-align:center'>{(pct_val*100):.2f}%</div>"
 
         for i in range(n):
-            a = data_a["rpu_list"][i]
-            b = data_b["rpu_list"][i]
-            pct = ((b - a) / a) if (pd.notna(a) and a > 0) else np.nan
+            a_rpu = data_a["rpu_list"][i]
+            b_rpu = data_b["rpu_list"][i]
+            pct = ((b_rpu - a_rpu) / a_rpu) if (pd.notna(a_rpu) and a_rpu > 0) else np.nan
             cols_change[1+i].markdown(pct_badge(pct), unsafe_allow_html=True)
 
         cols_change[1+n].markdown(" ")
-        a_tot = data_a["rpu_total"]
-        b_tot = data_b["rpu_total"]
-        pct_total = ((b_tot - a_tot) / a_tot) if (pd.notna(a_tot) and a_tot > 0) else np.nan
+        a_total_rpu = data_a["rpu_total"]
+        b_total_rpu = data_b["rpu_total"]
+        pct_total = ((b_total_rpu - a_total_rpu) / a_total_rpu) if (pd.notna(a_total_rpu) and a_total_rpu > 0) else np.nan
         cols_change[2+n].markdown(pct_badge(pct_total), unsafe_allow_html=True)
 
 with tabs[1]:
@@ -1566,8 +1590,7 @@ with tabs[1]:
             agg = aggregate(df_all, group_dims)
 
             rename_cols = {}
-            if ver_col != "version":
-                rename_cols[ver_col] = "version"
+            if ver_col != "version": rename_cols[ver_col] = "version"
             if key_col != "ad_unit" and key_col in agg.columns and key_col != "ad_name":
                 rename_cols[key_col] = "ad_unit"
             agg = agg.rename(columns=rename_cols)
@@ -1709,7 +1732,7 @@ with tabs[1]:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # ===== BẢNG THEO NGÀY: rev auto + nhập user; so sánh % theo rev/user =====
+            # ===== BẢNG THEO NGÀY: rev auto từ AdMob; nhập user/new user; so sánh % theo rev/user =====
             df_src_for_daily = st.session_state.get("global_df")
             fb_df_for_daily = st.session_state.get("firebase_df")
             render_daily_checkver_table(
