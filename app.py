@@ -1423,7 +1423,7 @@ def render_daily_checkver_table(
             row1[1+n].markdown(" ")
             row1[2+n].markdown(f"**{total_rev:,.2f}**")
 
-            # Row 2: Active user (ngày) + tổng (Firebase nếu có)
+            # Row 2: Active user
             row2 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
             row2[0].markdown(f"<div style='background:{tint};padding:2px 6px;border-radius:4px'>Active user</div>", unsafe_allow_html=True)
             user_inputs = []
@@ -1460,12 +1460,14 @@ def render_daily_checkver_table(
             # Row 4: rev/user (ngày, tổng)
             row4 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
             row4[0].markdown("rev/user (USD)")
+            rpu_list = []
             for i in range(n):
                 v = (rev_inputs[i] / user_inputs[i]) if (user_inputs[i] and user_inputs[i] > 0) else np.nan
+                rpu_list.append(v)
                 row4[1+i].markdown(f"{v:,.6f}" if pd.notna(v) else "—")
             row4[1+n].markdown(" ")
-            v_total = (total_rev / shown_user_total) if (shown_user_total and shown_user_total > 0) else np.nan
-            row4[2+n].markdown(f"**{v_total:,.6f}**" if pd.notna(v_total) else "**—**")
+            rpu_total = (total_rev / shown_user_total) if (shown_user_total and shown_user_total > 0) else np.nan
+            row4[2+n].markdown(f"**{rpu_total:,.6f}**" if pd.notna(rpu_total) else "**—**")
 
             # Row 5: rev/new user (ngày, tổng)
             row5 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
@@ -1477,38 +1479,43 @@ def render_daily_checkver_table(
             v_total2 = (total_rev / shown_new_user_total) if (shown_new_user_total and shown_new_user_total > 0) else np.nan
             row5[2+n].markdown(f"**{v_total2:,.6f}**" if pd.notna(v_total2) else "**—**")
 
-            return rev_inputs, total_rev
+            # Trả dữ liệu để tính % thay đổi theo rev/user
+            return {
+                "rev_inputs": rev_inputs,
+                "user_inputs": user_inputs,
+                "rpu_list": rpu_list,       # rev/user theo ngày
+                "rpu_total": rpu_total,     # rev/user tổng
+                "total_rev": total_rev
+            }
 
         # Render 2 block cho A và B
         st.markdown(" ")
-        rev_a_list, total_rev_a = block_for_version(version_a, user_total_a, new_user_total_a, tint="#F6EBD9")
+        data_a = block_for_version(version_a, user_total_a, new_user_total_a, tint="#F6EBD9")
         st.markdown(" ")
-        rev_b_list, total_rev_b = block_for_version(version_b, user_total_b, new_user_total_b, tint="#FFF2CC")
+        data_b = block_for_version(version_b, user_total_b, new_user_total_b, tint="#FFF2CC")
 
-        # Row cuối: % thay đổi rev (B so A)
+        # Row cuối: % thay đổi rev/user (B so A)
         st.markdown(" ")
         cols_change = st.columns([1] + [1]*n + [0.2, 1, 0.8])
-        cols_change[0].markdown(f"**Thay đổi rev {version_b} so {version_a} (%)**")
+        cols_change[0].markdown(f"**Thay đổi rev/user {version_b} so {version_a} (%)**")
+
+        def pct_badge(pct_val: float) -> str:
+            if pd.isna(pct_val):
+                return "—"
+            color = "#22c55e" if pct_val > 0 else ("#fb923c" if pct_val < 0 else "#e2e8f0")
+            return f"<div style='background:{color};color:#111827;padding:2px 6px;border-radius:4px;text-align:center'>{(pct_val*100):.2f}%</div>"
+
         for i in range(n):
-            a = rev_a_list[i] or 0.0
-            b = rev_b_list[i] or 0.0
-            pct = (b - a) / a if a > 0 else np.nan
-            if pd.notna(pct):
-                cols_change[1+i].markdown(
-                    f"<div style='background:#22c55e;color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct*100):.2f}%</div>",
-                    unsafe_allow_html=True
-                )
-            else:
-                cols_change[1+i].markdown("—")
+            a_rpu = data_a["rpu_list"][i] if i < len(data_a["rpu_list"]) else np.nan
+            b_rpu = data_b["rpu_list"][i] if i < len(data_b["rpu_list"]) else np.nan
+            pct = ((b_rpu - a_rpu) / a_rpu) if (pd.notna(a_rpu) and a_rpu > 0) else np.nan
+            cols_change[1+i].markdown(pct_badge(pct), unsafe_allow_html=True)
+
         cols_change[1+n].markdown(" ")
-        pct_total = (total_rev_b - total_rev_a) / total_rev_a if total_rev_a > 0 else np.nan
-        if pd.notna(pct_total):
-            cols_change[2+n].markdown(
-                f"<div style='background:#22c55e;color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct_total*100):.2f}%</div>",
-                unsafe_allow_html=True
-            )
-        else:
-            cols_change[2+n].markdown("—")
+        a_total_rpu = data_a["rpu_total"]
+        b_total_rpu = data_b["rpu_total"]
+        pct_total = ((b_total_rpu - a_total_rpu) / a_total_rpu) if (pd.notna(a_total_rpu) and a_total_rpu > 0) else np.nan
+        cols_change[2+n].markdown(pct_badge(pct_total), unsafe_allow_html=True)
 
 with tabs[1]:
     st.subheader("Checkver — So sánh 2 version (1 tệp)")
@@ -1595,184 +1602,420 @@ with tabs[1]:
 
             rename_cols = {}
             if ver_col != "version": rename_cols[ver_col] = "version"
-            if key_col != "ad_unit" and key_col in agg.columns and key_col != "ad_name":
-                rename_cols[key_col] = "ad_unit"
-            agg = agg.rename(columns=rename_cols)
-            if key_col == "ad_name" and "ad_unit" not in agg.columns:
-                agg["ad_unit"] = agg["ad_name"]
+            if key_col != "ad_unit" and key_col in agg.columns and answer accordingly.Hiểu rồi! Bạn muốn phần “Bảng theo ngày” không so sánh tổng doanh thu nữa, mà so sánh theo “rev/user” giữa Version B so với Version A, và tô màu ô theo chiều tăng/giảm: xanh nếu tăng, cam nếu giảm. Dưới đây là bản cập nhật đầy đủ cho file app.py của bạn, đã chỉnh sửa trực tiếp hàm render_daily_checkver_table để:
 
-            setA = set(agg.loc[agg["version"].astype(str) == str(version_a), "ad_unit"])
-            setB = set(agg.loc[agg["version"].astype(str) == str(version_b), "ad_unit"])
-            common_keys = sorted(setA & setB)
+- Ở mỗi cột ngày: hiển thị rev/user cho A và B, rồi dòng “Thay đổi rev/user B so A (%)”.
+- Ô % thay đổi theo ngày sẽ tô màu xanh khi dương, cam khi âm, để trống khi không tính được (NaN hoặc mẫu số 0).
+- Cột “Tổng” cũng là % thay đổi rev/user tổng (total_rev/total_user). Nếu muốn thêm so sánh cả “rev/new user”, mình giữ thêm một hàng “Thay đổi rev/new user B so A (%)” ngay dưới.
+- Nút “➕ Thêm ngày” vẫn hoạt động: tự động thêm cột ngày kế tiếp (last+1), và cho phép nhập tay rev/user/new_user ở cột mới. Với cột mới thêm, mặc định rev sẽ auto-fill 0 (bạn có thể sửa), user/new_user cũng là number_input để nhập tay.
 
-            view = st.radio(
-                "Hiển thị",
-                options=["Common (có ở cả 2)", f"Only in {version_a}", f"Only in {version_b}", "All (2 phiên bản đã chọn)"],
-                horizontal=True,
-            )
+Chỉ cần thay thế toàn bộ nội dung file app.py của bạn bằng đoạn mã dưới đây và chạy lại (đừng quên bấm Xóa cache dữ liệu ở sidebar sau khi thay):
 
-            c_search, c_clear = st.columns([0.94, 0.06])
-            with c_search:
-                st.session_state["checkver_search"] = st.text_input(
-                    "Lọc theo từ khoá (trên Ad unit/Ad name)", value=st.session_state.get("checkver_search", "")
-                )
-            with c_clear:
-                st.markdown("&nbsp;", unsafe_allow_html=True)
-                if st.button("✕", help="Xoá bộ lọc từ khoá"):
-                    st.session_state["checkver_search"] = ""
-                    safe_rerun()
-            search = st.session_state["checkver_search"].strip().lower()
+```python
+# app.py
+import io
+import re
+import unicodedata
+from typing import List, Dict, Optional, Tuple, Set
+from datetime import timedelta
 
-            shade_b = st.checkbox("Tô màu Version B", value=True)
-            template_mode = st.checkbox("Checkver template (chỉ highlight các nhóm phân tích)", value=False)
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from streamlit.components.v1 import html as st_html
 
-            if view.startswith("Common"):
-                df_view = agg[agg["ad_unit"].isin(common_keys) & agg["version"].isin([version_a, version_b])].copy()
-            elif view.startswith("Only in") and version_a in view:
-                onlyA = sorted(setA - setB)
-                df_view = agg[(agg["version"] == version_a) & (agg["ad_unit"].isin(onlyA))].copy()
-            elif view.startswith("Only in") and version_b in view:
-                onlyB = sorted(setB - setA)
-                df_view = agg[(agg["version"] == version_b) & (agg["ad_unit"].isin(onlyB))].copy()
-            else:
-                df_view = agg[agg["version"].isin([version_a, version_b])].copy()
+st.set_page_config(page_title="MO Tool", layout="wide")
 
-            if search:
-                cols_s = [c for c in ["ad_unit", "ad_name"] if c in df_view.columns]
-                if cols_s:
-                    mask = False
-                    for c in cols_s:
-                        mask = mask | df_view[c].astype(str).str.lower().str.contains(search)
-                    df_view = df_view[mask]
+# -------------------- Helper rerun --------------------
+def safe_rerun():
+    try:
+        st.rerun()
+    except Exception:
+        try:
+            st.experimental_rerun()
+        except Exception:
+            pass
 
-            if "ad_name" in df_view.columns:
-                df_view["_sort_name"] = df_view["ad_name"].astype(str)
-            else:
-                df_view["_sort_name"] = df_view["ad_unit"].astype(str)
-            df_view["_ver_tuple"] = df_view["version"].map(version_tuple)
-            sort_cols = [c for c in ["app"] if c in df_view.columns] + ["_sort_name", "_ver_tuple"]
-            df_view = df_view.sort_values(sort_cols, kind="stable").drop(columns=["_sort_name", "_ver_tuple"])
+# -------------------- Global CSS --------------------
+st.markdown(
+    """
+    <style>
+    [data-testid="stDataFrame"] thead tr th,
+    [data-testid="stDataFrame"] [role="columnheader"] {
+        background: #eaf0ff !important;
+        color: #101828 !important;
+        font-weight: 800 !important;
+        border-bottom: 1px solid #94a3b8 !important;
+    }
+    [data-testid="stDataFrame"] [role="columnheader"] * { color: #101828 !important; font-weight: 800 !important; }
+    [data-testid="stDataFrame"] thead { box-shadow: 0 2px 0 rgba(0,0,0,0.06); }
 
-            fb_df: Optional[pd.DataFrame] = st.session_state.get("firebase_df")
-            if isinstance(fb_df, pd.DataFrame) and not fb_df.empty:
-                join_keys = [k for k in ["app", "version"] if k in df_view.columns and k in fb_df.columns]
-                if join_keys:
-                    df_view = df_view.merge(fb_df, on=join_keys, how="left")
-            for c in ["user", "new_user"]:
-                if c not in df_view.columns:
-                    df_view[c] = np.nan
+    [data-testid="stDataFrame"] div[opacity='1'] {
+      white-space: normal !important;
+      overflow-wrap: anywhere !important;
+      word-break: break-word !important;
+      line-height: 1.2 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-            user = pd.to_numeric(df_view["user"], errors="coerce")
-            new_user = pd.to_numeric(df_view["new_user"], errors="coerce")
-            df_view["imp_per_user"]     = df_view["impressions"].astype(float).divide(user).where(user > 0)
-            df_view["imp_per_new_user"] = df_view["impressions"].astype(float).divide(new_user).where(new_user > 0)
-            df_view["rev_per_user"]     = df_view["estimated_earnings"].astype(float).divide(user).where(user > 0)
-            df_view["rev_per_new_user"] = df_view["estimated_earnings"].astype(float).divide(new_user).where(new_user > 0)
-            df_view["req_per_user"]     = df_view["requests"].astype(float).divide(user).where(user > 0)
-            df_view["req_per_new_user"] = df_view["requests"].astype(float).divide(new_user).where(new_user > 0)
+# -------------------- Session init --------------------
+st.session_state.setdefault("global_df_base", None)
+st.session_state.setdefault("global_df", None)
+st.session_state.setdefault("ad_mapping_dict", None)
+st.session_state.setdefault("ad_mapping_applied", False)
+st.session_state.setdefault("filters_open", False)
+st.session_state.setdefault("checkver_search", "")
+st.session_state.setdefault("firebase_df", None)
+st.session_state.setdefault("checkver_daycols", {})  # { "verA__verB": ["YYYY-MM-DD", ...] }
 
-            df_view = apply_native_rev_rule(df_view, mapping_applied=bool(st.session_state.get("ad_mapping_applied")))
+# =========================
+# Utils: normalize strings
+# =========================
+SPACE_RE = re.compile(r"\s+")
+PARENS_RE = re.compile(r"\(.*?\)")
+THOUSANDS_RE = re.compile(r"^\d{1,3}([.,]\d{3})+$")
+DECIMAL_COMMA_RE = re.compile(r"^\d+,\d+$")
+DECIMAL_DOT_RE = re.compile(r"^\d+\.\d+$")
 
-            ordered_cols = [
-                "app", "version", "ad_unit", "ad_name",
-                "estimated_earnings", "ecpm", "requests", "match_rate", "matched_requests",
-                "show_rate_on_request", "impressions", "ctr", "clicks",
-                "user", "new_user",
-                "imp_per_user", "imp_per_new_user",
-                "rev_per_user", "rev_per_new_user",
-                "req_per_user", "req_per_new_user",
-            ]
-            for c in ordered_cols:
-                if c not in df_view.columns:
-                    df_view[c] = np.nan
-            df_view = df_view[ordered_cols]
+def strip_accents(s: str) -> str:
+    if not isinstance(s, str):
+        s = str(s)
+    nfkd = unicodedata.normalize("NFD", s)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
 
-            show_pretty = st.checkbox("Hiển thị số đẹp (%, tiền, dấu phẩy)", value=True, key="pretty_checkver")
-            show_stt = st.checkbox("Hiển thị STT", value=False, key="stt_checkver")
-            df_print = build_pretty_df(df_view, ordered_cols) if show_pretty else df_view[ordered_cols].copy()
-            df_print = df_print.reset_index(drop=True)
-            if show_stt:
-                df_print.insert(0, "STT", np.arange(1, len(df_print) + 1))
+def normalize_key(s: str) -> str:
+    s = str(s or "").strip()
+    s = PARENS_RE.sub("", s)
+    s = strip_accents(s)
+    s = s.replace("Đ", "D").replace("đ", "d")
+    s = s.lower()
+    s = SPACE_RE.sub(" ", s)
+    s = s.replace("—", "-").replace("–", "-")
+    return s
 
-            # Xác định id_cols và allowed_keys (template)
-            if template_mode:
-                prefixes = tuple(p[0] for p in ANALYZE_GROUPS)
-                mask_pref = df_view["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
-                if "ad_name" in df_view.columns:
-                    mask_pref = mask_pref | df_view["ad_name"].astype(str).str.lower().str.startswith(prefixes)
-                id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns]
-                if not id_cols:
-                    id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
-                if not id_cols:
-                    id_cols = ["ad_unit"] if "ad_unit" in df_view.columns else ["ad_name"]
-                allowed_keys = set(tuple(row[c] if c in df_view.columns else None for c in id_cols)
-                                   for _, row in df_view[mask_pref].iterrows())
-            else:
-                id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns]
-                if not id_cols:
-                    id_cols = [c for c in ["app", "ad_name"] if c in df_view.columns]
-                if not id_cols:
-                    id_cols = ["ad_unit"] if "ad_unit" in df_view.columns else ["ad_name"]
-                allowed_keys = None
+# =========================================
+# Canonical schema + multilingual synonyms
+# =========================================
+CANONICAL_MAP: Dict[str, List[str]] = {
+    "date": ["date", "ngay", "day", "report date"],
+    "app": ["app", "application", "ung dung", "app name"],
+    "app_id": ["app id", "application id", "package id", "bundle id", "id ung dung"],
+    "ad_unit": ["ad unit", "ad unit name", "don vi quang cao", "adunit"],
+    "ad_unit_id": ["ad unit id", "ad unit code", "id don vi quang cao", "placement id"],
+    "ad_format": ["ad format", "format", "ad type", "dinh dang quang cao"],
+    "country": ["country", "quoc gia"],
+    "ad_source": ["ad source", "nguon quang cao", "network"],
+    "platform": ["platform", "os", "nen tang"],
+    "currency": ["currency", "currency code", "tien te", "ma tien te"],
+    "estimated_earnings": [
+        "estimated earnings", "estimated earnings usd",
+        "doanh thu uoc tinh", "thu nhap uoc tinh", "thu nhap uoc tinh usd",
+    ],
+    "requests": ["ad requests", "requests", "yeu cau", "so yeu cau", "so luot yeu cau", "so luot yeu cau quang cao"],
+    "matched_requests": ["matched requests", "matched ad requests", "so yeu cau da khop", "yeu cau da khop", "so luot yeu cau da khop"],
+    "impressions": ["impressions", "ad impressions", "so luot hien thi", "so lan hien thi"],
+    "clicks": ["clicks", "so luot nhap", "so lan nhap"],
+    "ecpm_input": ["ecpm", "ecpm usd", "ecpm quan sat duoc", "ecpm quan sat duoc usd"],
+    "rpm_input": ["rpm"],
+    "version": ["version", "app version", "app_ver", "ver", "build", "build version", "release"],
+}
 
-            print_cols = list(df_print.columns)
-            cell_colors = build_checkver_cell_colors(
-                df_numeric=df_view.reset_index(drop=True),
-                print_cols=print_cols,
-                version_a=version_a,
-                version_b=version_b,
-                id_cols=id_cols,
-                shade_b_rows=bool(shade_b),
-                allowed_keys=allowed_keys,
-            )
-            render_table(df_print, table_height, cell_colors=cell_colors)
+BIDDING_BLOCKERS = ["gia thau", "gia-thau", "dau gia", "bid", "bidding", "auction"]
+RATE_BLOCKERS = ["ty le", "ty-le", "rate"]
+PER_VALUE_BLOCKERS = ["tren moi", "per ", "per-", "per_", "moi nguoi", "per user", "per viewer"]
 
-            # Export
-            xls = to_excel_bytes({"Checkver": df_view[ordered_cols]})
-            st.download_button(
-                "Tải Excel (theo bảng hiện tại)",
-                data=xls,
-                file_name=f"checkver_{version_a}_vs_{version_b}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+# Prefix rule cho nhóm native
+NATIVE_PREFIXES = [
+    "native_language",
+    "native_language_dup",
+    "native_onboarding",
+    "native_onboarding_full",
+    "native_welcome",
+    "native_feature",
+    "native_permission",
+]
 
-            # ===== BẢNG THEO NGÀY: rev auto từ AdMob; nhập user/new user =====
-            df_src_for_daily = st.session_state.get("global_df")
-            fb_df_for_daily = st.session_state.get("firebase_df")
-            render_daily_checkver_table(
-                df_src=df_src_for_daily,
-                fb_df=fb_df_for_daily,
-                version_a=version_a,
-                version_b=version_b,
-                section_title="Bảng theo ngày (rev auto từ AdMob; nhập user/new user)"
-            )
+# Nhóm phân tích checkver
+ANALYZE_GROUPS = [
+    ("inter_splash", "Interstitial Splash"),
+    ("appopen_splash", "AppOpen Splash"),
+    ("native_splash", "Native Splash"),
+    ("native_language", "Native Language"),
+    ("native_language_dup", "Native Language Dup"),
+    ("native_onboarding", "Native Onboarding"),
+    ("native_onboarding_full", "Native Onboarding Full"),
+]
 
-            # ---------- PHÂN TÍCH CHECKVER ----------
-            st.markdown("---")
-            st.subheader("Phân tích checkver")
-            if st.button("Phân tích checkver", type="primary"):
-                st.write(f"So sánh {version_b} vs {version_a} theo danh mục: {', '.join([g[0] for g in ANALYZE_GROUPS])}")
+def build_reverse_map() -> Dict[str, str]:
+    rev = {}
+    for canon, variants in CANONICAL_MAP.items():
+        for v in variants:
+            rev[normalize_key(v)] = canon
+    return rev
 
-                base = agg.copy()
-                fb_df2 = st.session_state.get("firebase_df")
-                if isinstance(fb_df2, pd.DataFrame) and not fb_df2.empty:
-                    join_keys = [k for k in ["app", "version"] if k in base.columns and k in fb_df2.columns]
-                    if join_keys:
-                        base = base.merge(fb_df2, on=join_keys, how="left")
+REVERSE_MAP = build_reverse_map()
+
+# ---------- Daily table internal helpers ----------
+def _dates_to_str(dlist):
+    return [pd.to_datetime(d).date().isoformat() for d in dlist]
+
+def _daily_revenue_map(df_src: pd.DataTable, version_list: List[str]) -> Dict[Tuple[str, str], float]:
+    out: Dict[Tuple[str, str], float] = {}
+    if df_src is None or df_src.empty:
+        return out
+    if not {"version", "date", "estimated_earnings"}.issubset(set(df_src.columns)):
+        return out
+    d = df_src.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d[d["date"].notna()]
+    d["version"] = d["version"].astype(str)
+    d["date_iso"] = d["date"].dt.date.astype(str)
+    g = d[d["version"].isin([str(v) for v in version_list])].groupBy(["version", "date_iso"]).agg({"estimated_earnings": "sum"}).reset_index()
+    # Fallback if using older pandas without groupBy alias:
+    try:
+        _ = g.shape
+    except Exception:
+        g = d[d["version"].isin([str(v) for v in version_list])].groupby(["version", "date_iso"], dropna=False)["estimated_earnings"].sum(min_count=1).reset_index(name="estimated_earnings")
+    for _, r in g.iterrows():
+        out[(str(r["version"]), str(r["date_iso"]))] = float(r["estimated_earnings"] or 0.0)
+    return out
+
+def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, version: str) -> Tuple[Optional[float], Optional[float]]:
+    if not isinstance(fb_df, pd.DataFrame) or fb_df.empty or "version" not in fb_df.columns:
+        return (None, None)
+    v = str(version)
+    fb = fb_df.copy()
+    fb["version"] = fb["version"].astype(str)
+    fb = fb[fb["version"] == v]
+    if "app" in fb.columns and "app" in df_src.columns:
+        apps = df_src[df_src["version"].astype(str) == v]["app"].dropna().astype(str).unique().tolist()
+        if len(apps) > 0:
+            fb = fb[fb["app"].astype(str).isin(apps)]
+    if fb.empty:
+        return (None, None)
+    u = pd.to_numeric(fb.get("user", np.nan), errors="coerce").sum(min_count=1)
+    nu = pd.to_numeric(fb.get("new_user", np.nan), errors="coerce").sum(min_count=1)
+    u = float(u) if pd.notna(u) else None
+    nu = float(nu) if pd.notna(nu) else None
+    return (u, nu)
+
+def render_daily_checkver_table(
+    df_src: pd.DataFrame,
+    fb_df: Optional[pd.DataFrame],
+    version_a: str,
+    version_b: str,
+    section_title: str = "Bảng theo ngày (rev auto từ AdMob; nhập user/new user)"
+):
+    st.markdown("---")
+    with st.expander(section_title, expanded=False):
+        pair_key = _pair_key(version_a, version_b)
+        st.session_state.setdefault("checkver_daycols", {})
+        if pair_key not in st.session_state["checkver_daycols"]:
+            st.session_state["checkver_daycols"][pair_key] = _init_daily_dates(df_src, version_a, version_b, n_default=4)
+
+        day_cols: List[str] = st.session_state["checkver_daycols"][pair_key]
+        n = len(day_cols)
+
+        rev_map = _daily_revenue_map(df_src, [version_a, version_b])
+        user_total_a, new_user_total_a = _fb_totals_for_version(fb_df, df_src, version_a)
+        user_total_b, new_user_total_b = _fb_totals_for_version(fb_df, df_src, version_b)
+
+        # Header
+        cols = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+        cols[0].markdown(" ")
+        for i, d in enumerate(day_cols):
+            cols[1+i].markdown(f"**{_fmt_mdy(d)}**")
+        cols[1+n].markdown(" ")
+        cols[2+n].markdown("**Tổng**")
+        with cols[3+n]:
+            if st.button("➕ Thêm ngày", key=f"btn_add_day_{pair_key}"):
+                if len(day_cols) > 0:
+                    last = max(pd.to_datetime(x) for x in day_cols)
+                    nxt = (last + timedelta(days=1)).date().isoformat()
                 else:
-                    if "user" not in base.columns: base["user"] = np.nan
-                    if "new_user" not in base.columns: base["new_user"] = np.nan
+                    nxt = pd.Timestamp.today().date().isoformat()
+                day_cols.append(nxt)
+                st.session_state["checkver_daycols"][pair_key] = day_cols
+                safe_rerun()
 
-                if "ad_unit" not in base.columns and "ad_name" in base.columns:
-                    base["ad_unit"] = base["ad_name"]
+        def block_for_version(version: str, user_total: Optional[float], new_user_total: Optional[float], tint: str):
+            st.markdown(f"**Phiên bản {version}**")
+            # Row 1: rev
+            row1 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row1[0].markdown("rev")
+            total_rev = 0.0
+            rev_inputs = []
+            for i, d in enumerate(day_cols):
+                default_rev = float(rev_map.get((str(version), d), 0.0))
+                val = row1[1+i].number_input(
+                    label=f"rev_{version}_{d}",
+                    value=float(default_rev),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"rev_in_{version}_{d}",
+                )
+                rev_inputs.append(val)
+                total_rev += (val or 0.0)
+            row1[1+n].markdown(" ")
+            row1[2+n].markdown(f"**{total_rev:,.2f}**")
 
-                any_res = False
-                for prefix, label in ANALYZE_GROUPS:
-                    data = analyze_group(base, prefix, version_a, version_b)
-                    if data is None:
-                        continue
-                    any_res = True
-                    analysis_to_text(prefix, label, data, version_a, version_b)
+            # Row 2: Active user
+            row2 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row2[0].markdown(f"<div style='background:{tint};padding:2px 6px;border-radius:4px'>user</div>", unsafe_allow_html=True)
+            user_inputs = []
+            for i, d in enumerate(day_cols):
+                u = row2[1+i].number_input(
+                    label=f"user_{version}_{d}",
+                    value=0.0,
+                    step=1.0,
+                    format="%.0f",
+                    key=f"user_in_{version}_{d}",
+                )
+                user_inputs.append(u)
+            row2[1+n].markdown(" ")
+            shown_user_total = user_total if user_total is not None else float(np.nansum(user_inputs))
+            row2[2+n].markdown(f"**{shown_user_total:,.0f}**" if pd.notna(shown_user_total) else "**—**")
 
-                if not any_res:
-                    st.info("Version B không có ads thuộc các nhóm trong danh sách phân tích.")
+            # Row 3: New active user
+            row3 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row3[0].markdown(f"<div style='background:{tint};padding:2px 6px;border-radius:4px'>new user</div>", unsafe_allow_html=True)
+            new_user_inputs = []
+            for i, d in enumerate(day_cols):
+                nu = row3[1+i].number_input(
+                    label=f"newuser_{version}_{d}",
+                    value=0.0,
+                    step=1.0,
+                    format="%.0f",
+                    key=f"newuser_in_{version}_{d}",
+                )
+                new_user_inputs.append(nu)
+            row3[1+n].markdown(" ")
+            shown_new_user_total = new_user_total if new_user_total is not None else float(np.nansum(new_user_inputs))
+            row3[2+n].markdown(f"**{shown_new_user_total:,.0f}**" if pd.notna(shown_new_user_total) else "**—**")
+
+            # Row 4: rev/user (ngày, tổng)
+            row4 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row4[0].markdown("rev/user(usd)")
+            rev_per_user_cols = []
+            for i in range(n):
+                v = (rev_inputs[i] / user_inputs[i]) if (user_inputs[i] and user_inputs[i] > 0) else np.nan
+                rev_per_user_cols.append(v)
+                row4[1+i].markdown(f"{v:,.6f}" if pd.notna(v) else "—")
+            row4[1+n].markdown(" ")
+            v_total = (total_rev / shown_user_total) if (shown_user_total and shown_user_total > 0) else np.nan
+            row4[2+n].markdown(f"**{v_total:,.6f}**" if pd.notna(v_total) else "**—**")
+
+            return rev_inputs, user_inputs, new_user_inputs, rev_per_user_cols, total_rev, shown_user_total, shown_new_user_total
+
+        # Draw A and B blocks
+        st.markdown(" ")
+        a_rev_list, a_user_list, a_newuser_list, a_rpu_list, a_total_rev = None, None, None, None, None
+        b_rev_list, b_user_list, b_newuser_list, b_rpu_list, b_total_rev = None, None, None, None, None
+
+        a_ret = block_for_version(version_a, user_total_a, new_user_total_a, tint="#F6EBD9")
+        a_rev_list, a_total_rev = a_ret[0], a_ret[5]
+        a_user_list = a_ret[1]
+        a_newuser_list = a_ret[2]
+        a_rpu_list = a_ret[3]
+
+        st.markdown(" ")
+        b_ret = block_for_version(version_b, user_total_b, new_user_total_b, tint="#FFF2CC")
+        b_rev_list, b_total_rev = b_ret[0], b_ret[5]
+        b_user_list = b_ret[1]
+        b_newuser_list = b_ret[2]
+        b_rpu_list = b_ret[3]
+
+        # Row cuối: % thay đổi rev/user (B so A) — xanh nếu dương, cam nếu âm
+        st.markdown(" ")
+        pct_cols = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+        pct_cols[0].markdown(f"**Thay đổi rev/user {version_b} so {version_a} (%)**")
+        for i in range(n):
+            a_val = a_rpu_list[i]
+            b_val = b_rpu_list[i]
+            pct = (b_val - a_val) / a_val if (a_val is not None and not np.isnan(a_val) and a_val != 0) else np.nan
+            if pd.notna(pct):
+                color = "#22c55e" if pct >= 0 else "#fb923c"
+                pct_txt = f"<div style='background:{color};color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct*100):.2f}%</div>"
+                pct_cols[1+i].markdown(pct_txt, unsafe_allow_html=True)
+            else:
+                pct_cols[1+i].markdown("—")
+        pct_cols[1+n].markdown(" ")
+        # % tổng theo rev/user tổng
+        total_a_rpu = (a_total_rev / (user_total_a if user_total_a and user_total_a > 0 else np.nan))
+        total_b_rpu = (b_total_rev / (new_user_total_b if new_user_total_b and new_user_total_b > 0 else np.nan))
+        pct_total_rpu = (total_b_rpu - total_a_rpu) / total_a_rpu if (pd.notna(total_a_rpu) and total_a_rpu != 0) else np.nan
+        if pd.notna(pct_total_rpu):
+            color_tot = "#22c55e" if pct_total_rpu >= 0 else "#fb923c"
+            pct_label = f"<div style='background:{color_tot};color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct_total_rpu*100):.2f}%</div>"
+            pct_cols[2+n].markdown(pct_label, unsafe_allow_html=True)
+        else:
+            pct_cols[2+n].markdown("—")
+
+        # Optional: hiển thị thêm dòng % thay đổi rev/new user nếu bạn cần
+        show_rev_per_new_user_change = st.checkbox("Hiển thị thêm dòng % thay đổi rev/new user (B so A)")
+        if show_rev_per_new_user_change:
+            cols_change2 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            cols_change2[0].markdown(f"**Thay đổi rev/new user {version_b} so {version_a} (%)**")
+            for i in range(n):
+                a_val = a_newuser_list[i]
+                b_val = b_newuser_list[i]
+                # dùng rev/new_user theo ngày đã tính ở row5: b_rpu_list[i] vs a_rpu_list[i]
+                # Nếu muốn theo new_user, dùng new_user_inputs & rev_inputs; ở đây so rpu_new từng ngày:
+                pct = ( (rev_b_list[i] / b_newuser_list[i]) - (rev_a_list[i] / a_newuser_list[i]) ) if (b_newuser_list[i] and a_newuser_list[i] and a_newuser_list[i] > 0) else np.nan
+                if pd.notna(pct) and np.isfinite(pct):
+                    color = "#22c55e" if pct >= 0 else "#fb923c"
+                    cols_change2[1+i].markdown(
+                        f"<div style='background:{color};color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct*100):.2f}%</div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    cols_change2[1+i].markdown("—")
+            cols_change2[1+n].markdown(" ")
+            # tổng theo new_user
+            total_a_rpnu = (total_rev_a / (user_total_a if user_total_a and user_total_a > 0 else np.nan))
+            total_b_rpnu = (total_rev_b / (user_total_b if user_total_b and user_total_b > 0) else np.nan)
+            pct_total_rpnu = (total_b_rpnu - total_a_rpnu) / total_b_rpnu if (pd.notna(total_b_rpnu) and total_b_rpnu != 0) else np.nan
+            if pd.notna(pct_total_rpnu):
+                cols_change2[2+n].markdown(
+                    f"<div style='background:#22c55e;color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct_total_rpnu*100):.2f}%</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                cols_change2[2+n].markdown("—")
+
+            st.caption("Ô màu xanh: % dương (B tốt hơn A). Ô màu cam: % âm (B kém hơn A).")
+
+    # ---------- PHÂN TÍCH CHECKVER ----------
+    st.markdown("---")
+    st.subheader("Phân tích checkver")
+    if st.button("Phân tích checkver", type="primary", key="btn_analyze_groups"):
+        st.write(f"So sánh {version_b} vs {version_a} theo danh mục: {', '.join([g[0] for g in ANALYZE_GROUPS])}")
+
+        base = agg.copy()
+        fb_df2 = st.session_state.get("firebase_df")
+        if isinstance(fb_df2, pd.DataFrame) and not fb_df2.empty:
+            join_keys = [k for k in ["app", "version"] if k in base.columns and k in fb_df2.columns]
+            if join_keys:
+                base = base.merge(fb_df2, on=join_keys, how="left")
+        else:
+            if "user" not in base.columns: base["user"] = np.nan
+            if "new_user" not in base.columns: base["new_user"] = np.nan
+
+        if "ad_unit" not in base.columns and "ad_name" in base.columns:
+            base["ad_unit"] = base["ad_name"]
+
+        any_res = False
+        for prefix, label in ANALYZE_GROUPS:
+            data = analyze_group(base, prefix, version_a, version_b)
+            if data is None:
+                continue
+            any_res = True
+            analysis_to_text(prefix, label, data, version_a, version_b)
+
+        if not any_res:
+            st.info("Version B không có ads thuộc các nhóm trong danh sách phân tích.")
