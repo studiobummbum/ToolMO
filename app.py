@@ -534,6 +534,53 @@ def build_pretty_df(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     for c in num6_cols:  out[c] = out[c].apply(fmt_num6)
     return out
 
+# =========================
+# Export template (Google Sheet)
+# =========================
+def _num(series, ndigits=None, as_int=False):
+    s = pd.to_numeric(series, errors="coerce")
+    if as_int:
+        return s.round().astype("Int64")
+    if ndigits is not None:
+        return s.round(ndigits)
+    return s
+
+def build_sheet_template_df(df_view: pd.DataFrame) -> pd.DataFrame:
+    get = lambda c: df_view[c] if c in df_view.columns else np.nan
+    exp = pd.DataFrame({
+        "App": get("app").astype(str) if "app" in df_view.columns else "",
+        "App ver": get("version").astype(str),
+        "Ad unit": get("ad_unit").astype(str),
+        "Ad name": (get("ad_name").astype(str) if "ad_name" in df_view.columns else get("ad_unit").astype(str)),
+        "Estimated $": _num(get("estimated_earnings"), ndigits=2),
+        "Observed eCPM $": _num(get("ecpm"), ndigits=2),
+        "Requests": _num(get("requests"), as_int=True),
+        "Match rate": _num(get("match_rate"), ndigits=4),
+        "Matched requests": _num(get("matched_requests"), as_int=True),
+        "Show rate": _num(get("show_rate_on_request"), ndigits=4),
+        "Impressions": _num(get("impressions"), as_int=True),
+        "CTR": _num(get("ctr"), ndigits=4),
+        "Clicks": _num(get("clicks"), as_int=True),
+        "user": _num(get("user"), as_int=True),
+        "new user": _num(get("new_user"), as_int=True),
+        "imp/user": _num(get("imp_per_user"), ndigits=4),
+        "imp/new user": _num(get("imp_per_new_user"), ndigits=4),
+        "req/user": _num(get("req_per_user"), ndigits=4),
+        "req/new user": _num(get("req_per_new_user"), ndigits=4),
+        "rev/user": _num(get("rev_per_user"), ndigits=6),
+        "rev/new user": _num(get("rev_per_new_user"), ndigits=6),
+    })
+    col_order = [
+        "App","App ver","Ad unit","Ad name",
+        "Estimated $","Observed eCPM $",
+        "Requests","Match rate","Matched requests","Show rate",
+        "Impressions","CTR","Clicks",
+        "user","new user",
+        "imp/user","imp/new user","req/user","req/new user","rev/user","rev/new user",
+    ]
+    exp = exp[col_order]
+    return exp
+
 # ================
 # Helper: ad_unit_code summary (cho Manual)
 # ================
@@ -1483,7 +1530,7 @@ def render_daily_checkver_table(
         st.markdown(" ")
         data_b = block_for_version(version_b, user_total_b, tint="#FFF2CC")
 
-        # Row cuối: % thay đổi rev/user (B so A) — xanh nếu dương, cam nếu âm
+        # Row cuối: % thay đổi rev/user (B so A)
         st.markdown(" ")
         cols_change = st.columns([1] + [1]*n + [0.2, 1, 0.8])
         cols_change[0].markdown(f"**Thay đổi rev/user {version_b} so {version_a} (%)**")
@@ -1723,7 +1770,7 @@ with tabs[1]:
             )
             render_table(df_print, table_height, cell_colors=cell_colors)
 
-            # Export
+            # Export Excel theo bảng hiện tại
             xls = to_excel_bytes({"Checkver": df_view[ordered_cols]})
             st.download_button(
                 "Tải Excel (theo bảng hiện tại)",
@@ -1772,3 +1819,15 @@ with tabs[1]:
 
                 if not any_res:
                     st.info("Version B không có ads thuộc các nhóm trong danh sách phân tích.")
+
+            # ===== Xuất CSV template (để copy sang Google Sheet) =====
+            st.markdown("---")
+            st.subheader("Xuất CSV (template Google Sheet)")
+            template_df = build_sheet_template_df(df_view)
+            csv_bytes = template_df.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="Xuất CSV template (App, App ver, Ad unit, Ad name, …)",
+                data=csv_bytes,
+                file_name=f"checkver_template_{version_a}_vs_{version_b}.csv",
+                mime="text/csv",
+            )
