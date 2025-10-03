@@ -3,6 +3,7 @@ import io
 import re
 import unicodedata
 from typing import List, Dict, Optional, Tuple, Set
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -1297,6 +1298,218 @@ def analysis_to_text(prefix: str, label: str, data: Dict, version_a: str, versio
 
     st.divider()
 
+# ------- Daily compare helpers (Checkver) -------
+def _pair_key(ver_a: str, ver_b: str) -> str:
+    return f"{str(ver_a)}__{str(ver_b)}"
+
+def _fmt_mdy(date_iso: str) -> str:
+    dt = pd.to_datetime(date_iso, errors="coerce")
+    if pd.isna(dt):
+        return str(date_iso)
+    return f"{dt.month}/{dt.day}/{dt.year}"
+
+def _init_daily_dates(df_src: pd.DataFrame, version_a: str, version_b: str, n_default: int = 4) -> list:
+    if df_src is None or df_src.empty or "date" not in df_src.columns or "version" not in df_src.columns:
+        today = pd.Timestamp.today().normalize()
+        base = [(today - pd.Timedelta(days=i)).date().isoformat() for i in range(n_default)][::-1]
+        return base
+    d = df_src.copy()
+    d = d[d["version"].astype(str).isin([str(version_a), str(version_b)])]
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d[d["date"].notna()]
+    if d.empty:
+        today = pd.Timestamp.today().normalize()
+        base = [(today - pd.Timedelta(days=i)).date().isoformat() for i in range(n_default)][::-1]
+        return base
+    uniq = sorted(pd.to_datetime(d["date"].dt.normalize()).dt.date.unique())
+    pick = uniq[-n_default:] if len(uniq) >= n_default else uniq
+    return [x.isoformat() for x in pick]
+
+def _daily_revenue_map(df_src: pd.DataFrame, version_list: list) -> dict:
+    # Map: (version, date_iso) -> sum(rev)
+    out = {}
+    if df_src is None or df_src.empty:
+        return out
+    need = {"version", "date", "estimated_earnings"}
+    if not need.issubset(set(df_src.columns)):
+        return out
+    d = df_src.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d[d["date"].notna()]
+    d["date_iso"] = d["date"].dt.date.astype(str)
+    d["version"] = d["version"].astype(str)
+    d = d[d["version"].isin([str(v) for v in version_list])]
+    g = d.groupby(["version", "date_iso"], dropna=False)["estimated_earnings"].sum(min_count=1).reset_index()
+    for _, r in g.iterrows():
+        out[(str(r["version"]), str(r["date_iso"]))] = float(r["estimated_earnings"] or 0.0)
+    return out
+
+def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, version: str) -> tuple:
+    if not isinstance(fb_df, pd.DataFrame) or fb_df.empty or "version" not in fb_df.columns:
+        return (None, None)
+    v = str(version)
+    fb = fb_df.copy()
+    fb["version"] = fb["version"].astype(str)
+    fb = fb[fb["version"] == v]
+    if "app" in fb.columns and "app" in df_src.columns:
+        apps = df_src[df_src["version"].astype(str) == v]["app"].dropna().astype(str).unique().tolist()
+        if apps:
+            fb = fb[fb["app"].astype(str).isin(apps)]
+    if fb.empty:
+        return (None, None)
+    u = pd.to_numeric(fb.get("user", np.nan), errors="coerce").sum(min_count=1)
+    nu = pd.to_numeric(fb.get("new_user", np.nan), errors="coerce").sum(min_count=1)
+    u = float(u) if pd.notna(u) else None
+    nu = float(nu) if pd.notna(nu) else None
+    return (u, nu)
+
+def render_daily_checkver_table(
+    df_src: pd.DataFrame,
+    fb_df: Optional[pd.DataFrame],
+    version_a: str,
+    version_b: str,
+    section_title: str = "Bảng theo ngày (rev auto từ AdMob; nhập user/new user)"
+):
+    st.markdown("---")
+    with st.expander(section_title, expanded=False):
+        pair_key = _pair_key(version_a, version_b)
+        st.session_state.setdefault("checkver_daycols", {})
+        if pair_key not in st.session_state["checkver_daycols"]:
+            st.session_state["checkver_daycols"][pair_key] = _init_daily_dates(df_src, version_a, version_b, n_default=4)
+
+        day_cols = st.session_state["checkver_daycols"][pair_key]  # list date_iso
+        n = len(day_cols)
+
+        rev_map = _daily_revenue_map(df_src, [version_a, version_b])
+        user_total_a, new_user_total_a = _fb_totals_for_version(fb_df, df_src, version_a)
+        user_total_b, new_user_total_b = _fb_totals_for_version(fb_df, df_src, version_b)
+
+        # Header
+        cols = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+        cols[0].markdown(" ")
+        for i, d in enumerate(day_cols):
+            cols[1+i].markdown(f"**{_fmt_mdy(d)}**")
+        cols[1+n].markdown(" ")
+        cols[2+n].markdown("**Tổng**")
+        with cols[3+n]:
+            if st.button("➕ Thêm ngày", key=f"btn_add_day_{pair_key}"):
+                if len(day_cols) > 0:
+                    last = max(pd.to_datetime(x) for x in day_cols)
+                    nxt = (last + timedelta(days=1)).date().isoformat()
+                else:
+                    nxt = pd.Timestamp.today().date().isoformat()
+                day_cols.append(nxt)
+                st.session_state["checkver_daycols"][pair_key] = day_cols
+                safe_rerun()
+
+        def block_for_version(version: str, user_total: Optional[float], new_user_total: Optional[float], tint: str):
+            st.markdown(f"**Phiên bản {version}**")
+            # Row 1: rev
+            row1 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row1[0].markdown("rev")
+            total_rev = 0.0
+            rev_inputs = []
+            for i, d in enumerate(day_cols):
+                default_rev = float(rev_map.get((str(version), d), 0.0))
+                val = row1[1+i].number_input(
+                    label=f"rev_{version}_{d}",
+                    value=float(default_rev),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"rev_in_{version}_{d}",
+                )
+                rev_inputs.append(val)
+                total_rev += (val or 0.0)
+            row1[1+n].markdown(" ")
+            row1[2+n].markdown(f"**{total_rev:,.2f}**")
+
+            # Row 2: Active user (ngày) + tổng (Firebase nếu có)
+            row2 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row2[0].markdown(f"<div style='background:{tint};padding:2px 6px;border-radius:4px'>Active user</div>", unsafe_allow_html=True)
+            user_inputs = []
+            for i, d in enumerate(day_cols):
+                u = row2[1+i].number_input(
+                    label=f"user_{version}_{d}",
+                    value=0.0,
+                    step=1.0,
+                    format="%.0f",
+                    key=f"user_in_{version}_{d}",
+                )
+                user_inputs.append(u)
+            row2[1+n].markdown(" ")
+            shown_user_total = user_total if user_total is not None else float(np.nansum(user_inputs))
+            row2[2+n].markdown(f"**{shown_user_total:,.0f}**" if pd.notna(shown_user_total) else "**—**")
+
+            # Row 3: New active user
+            row3 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row3[0].markdown(f"<div style='background:{tint};padding:2px 6px;border-radius:4px'>New active user</div>", unsafe_allow_html=True)
+            new_user_inputs = []
+            for i, d in enumerate(day_cols):
+                nu = row3[1+i].number_input(
+                    label=f"newuser_{version}_{d}",
+                    value=0.0,
+                    step=1.0,
+                    format="%.0f",
+                    key=f"newuser_in_{version}_{d}",
+                )
+                new_user_inputs.append(nu)
+            row3[1+n].markdown(" ")
+            shown_new_user_total = new_user_total if new_user_total is not None else float(np.nansum(new_user_inputs))
+            row3[2+n].markdown(f"**{shown_new_user_total:,.0f}**" if pd.notna(shown_new_user_total) else "**—**")
+
+            # Row 4: rev/user (ngày, tổng)
+            row4 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row4[0].markdown("rev/user (USD)")
+            for i in range(n):
+                v = (rev_inputs[i] / user_inputs[i]) if (user_inputs[i] and user_inputs[i] > 0) else np.nan
+                row4[1+i].markdown(f"{v:,.6f}" if pd.notna(v) else "—")
+            row4[1+n].markdown(" ")
+            v_total = (total_rev / shown_user_total) if (shown_user_total and shown_user_total > 0) else np.nan
+            row4[2+n].markdown(f"**{v_total:,.6f}**" if pd.notna(v_total) else "**—**")
+
+            # Row 5: rev/new user (ngày, tổng)
+            row5 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row5[0].markdown("rev/new user (USD)")
+            for i in range(n):
+                v = (rev_inputs[i] / new_user_inputs[i]) if (new_user_inputs[i] and new_user_inputs[i] > 0) else np.nan
+                row5[1+i].markdown(f"{v:,.6f}" if pd.notna(v) else "—")
+            row5[1+n].markdown(" ")
+            v_total2 = (total_rev / shown_new_user_total) if (shown_new_user_total and shown_new_user_total > 0) else np.nan
+            row5[2+n].markdown(f"**{v_total2:,.6f}**" if pd.notna(v_total2) else "**—**")
+
+            return rev_inputs, total_rev
+
+        # Render 2 block cho A và B
+        st.markdown(" ")
+        rev_a_list, total_rev_a = block_for_version(version_a, user_total_a, new_user_total_a, tint="#F6EBD9")
+        st.markdown(" ")
+        rev_b_list, total_rev_b = block_for_version(version_b, user_total_b, new_user_total_b, tint="#FFF2CC")
+
+        # Row cuối: % thay đổi rev (B so A)
+        st.markdown(" ")
+        cols_change = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+        cols_change[0].markdown(f"**Thay đổi rev {version_b} so {version_a} (%)**")
+        for i in range(n):
+            a = rev_a_list[i] or 0.0
+            b = rev_b_list[i] or 0.0
+            pct = (b - a) / a if a > 0 else np.nan
+            if pd.notna(pct):
+                cols_change[1+i].markdown(
+                    f"<div style='background:#22c55e;color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct*100):.2f}%</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                cols_change[1+i].markdown("—")
+        cols_change[1+n].markdown(" ")
+        pct_total = (total_rev_b - total_rev_a) / total_rev_a if total_rev_a > 0 else np.nan
+        if pd.notna(pct_total):
+            cols_change[2+n].markdown(
+                f"<div style='background:#22c55e;color:white;padding:2px 6px;border-radius:4px;text-align:center'>{(pct_total*100):.2f}%</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            cols_change[2+n].markdown("—")
+
 with tabs[1]:
     st.subheader("Checkver — So sánh 2 version (1 tệp)")
 
@@ -1521,6 +1734,17 @@ with tabs[1]:
                 data=xls,
                 file_name=f"checkver_{version_a}_vs_{version_b}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            # ===== BẢNG THEO NGÀY: rev auto từ AdMob; nhập user/new user =====
+            df_src_for_daily = st.session_state.get("global_df")
+            fb_df_for_daily = st.session_state.get("firebase_df")
+            render_daily_checkver_table(
+                df_src=df_src_for_daily,
+                fb_df=fb_df_for_daily,
+                version_a=version_a,
+                version_b=version_b,
+                section_title="Bảng theo ngày (rev auto từ AdMob; nhập user/new user)"
             )
 
             # ---------- PHÂN TÍCH CHECKVER ----------
