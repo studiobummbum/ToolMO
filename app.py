@@ -942,15 +942,17 @@ with tabs[0]:
     if df is None or df.empty:
         st.info("Chưa có dữ liệu sau bộ lọc chung.")
     else:
-        def fmt_money(x):
+       def fmt_money(x):
             try:
-                return f\"${x:,.2f}\"
+                return f"${x:,.2f}"
             except Exception:
                 return "—"
+
         def fmt_pct(x):
-            return f\"{x*100:,.2f}%\" if pd.notnull(x) else "—"
+            return f"{x*100:,.2f}%" if pd.notnull(x) else "—"
+
         def fmt_float(x):
-            return f\"{x:,.6f}\" if pd.notnull(x) else "—"
+            return f"{x:,.6f}" if pd.notnull(x) else "—"
         total = aggregate(df, [])
         tot = total.iloc[0]
         c1, c2, c3, c4, c5, c6 = st.columns(6)
