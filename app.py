@@ -387,7 +387,7 @@ def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def ensure_metric_cols(df: pd.DataFrame) -> pdDataFrame:
+def ensure_metric_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for c in NUMERIC_COLS:
         if c not in df.columns:
