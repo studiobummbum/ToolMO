@@ -383,27 +383,50 @@ def compute_kpis(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def aggregate(df: pd.DataFrame, dims: List[str]) -> pd.DataFrame:
+    """
+    Gom nhóm theo dims và cộng các metric, an toàn với trùng tên cột
+    (không dùng reset_index để tránh 'cannot insert ... already exists').
+    """
     metrics = ["estimated_earnings", "requests", "matched_requests", "impressions", "clicks"]
+
     if df is None or df.shape[0] == 0:
         if not dims:
             base = pd.DataFrame({m: [0.0] for m in metrics})
             return compute_kpis(base)
         else:
             return pd.DataFrame(columns=(dims + metrics))
+
+    # Giữ lại dims hợp lệ + khử trùng lặp, bảo toàn thứ tự
+    dims = [d for d in dims if d in df.columns]
+    seen = set()
+    dims = [d for d in dims if not (d in seen or seen.add(d))]
+
     metrics_present = [m for m in metrics if m in df.columns]
+
+    # Trường hợp không có dims: cộng toàn bảng
     if not dims:
         sums = {m: [pd.to_numeric(df[m], errors="coerce").sum()] if m in df.columns else [0.0] for m in metrics}
         out = pd.DataFrame(sums)
         return compute_kpis(out)
+
+    # Nếu không có metric nào: trả về các dims với 0
     if not metrics_present:
         uniq = df[dims].drop_duplicates().reset_index(drop=True)
         for m in metrics:
             uniq[m] = 0.0
         return compute_kpis(uniq)
-    grouped = df.groupby(dims, dropna=False)[metrics_present].sum().reset_index()
+
+    # GROUP BY an toàn (không reset_index)
+    grouped = (
+        df.groupby(dims, dropna=False, as_index=False)[metrics_present]
+          .sum(min_count=1)
+    )
+
+    # Bổ sung các metric chưa có cột (nếu thiếu)
     for m in metrics:
         if m not in grouped.columns:
             grouped[m] = 0.0
+
     grouped = compute_kpis(grouped)
     return grouped.sort_values("estimated_earnings", ascending=False)
 
