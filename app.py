@@ -1155,15 +1155,23 @@ def normalize_fb_columns(df: pd.DataFrame) -> pd.DataFrame:
             col_map["new_user"] = c
         elif any(x in k for x in ["active user", "active users", "user", "users", "dau"]) and "user" not in col_map:
             col_map["user"] = c
-    out = df.copy().rename(columns={v: k for k, v in col_map.items()] )
+
+    # Đổi tên cột về chuẩn
+    out = df.copy()
+    out = out.rename(columns={v: k for k, v in col_map.items()})
+
+    # Lọc cột cần thiết
     keep = [c for c in ["app", "version", "user", "new_user"] if c in out.columns]
     out = out[keep]
+
+    # Kiểu dữ liệu
     for c in ["user", "new_user"]:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
     for c in ["app", "version"]:
         if c in out.columns:
             out[c] = out[c].astype(str).str.strip()
+
     return out
 
 
