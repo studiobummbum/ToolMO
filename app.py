@@ -612,7 +612,7 @@ HELP_MAP = {
     "imp_per_user": "impressions / user",
     "imp_per_new_user": "impressions / new_user",
     "rev_per_user": "estimated_earnings / user",
-    "rev_per_new_user": "estimated_earnings / new_user",
+    "rev_per_new_user": "estimated_earnings / new user",
     "req_per_user": "requests / user",
     "req_per_new_user": "requests / new user",
 }
@@ -666,6 +666,87 @@ def render_table(df_print: pd.DataFrame, height: int, cell_colors: Optional[list
     fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0), autosize=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+# ================
+# Highlight cho Checkver (thiếu trong file cũ)
+# ================
+def build_checkver_cell_colors(
+    df_numeric: pd.DataFrame,
+    print_cols: List[str],
+    version_a: str,
+    version_b: str,
+    id_cols: List[str],
+    shade_b_rows: bool = True,
+    allowed_keys: Optional[Set[Tuple]] = None,
+) -> list:
+    n_rows = len(df_numeric)
+    n_cols = len(print_cols)
+
+    base_A = "white"
+    base_B = "#F6EBD9" if shade_b_rows else "white"
+    good = "#22c55e"
+    bad = "#fb923c"
+
+    ver = df_numeric["version"].astype(str).tolist()
+
+    def key_of_row(r: int) -> Tuple:
+        return tuple(df_numeric.loc[r, c] if c in df_numeric.columns else None for c in id_cols)
+
+    allowed_row = []
+    for r in range(n_rows):
+        if allowed_keys is None:
+            allowed_row.append(True)
+        else:
+            allowed_row.append(key_of_row(r) in allowed_keys)
+
+    cell_colors = [[
+        (base_B if (ver[r] == str(version_b) and allowed_row[r]) else base_A)
+        for r in range(n_rows)
+    ] for _ in range(n_cols)]
+
+    idxA, idxB = {}, {}
+    for r in range(n_rows):
+        k = key_of_row(r)
+        if ver[r] == str(version_a):
+            idxA[k] = r
+        elif ver[r] == str(version_b):
+            idxB[k] = r
+
+    comp_cols = [
+        "show_rate_on_request",
+        "req_per_user", "req_per_new_user",
+        "imp_per_user", "imp_per_new_user",
+        "rev_per_user", "rev_per_new_user",
+    ]
+
+    for k, rB in idxB.items():
+        rA = idxA.get(k, None)
+        if allowed_keys is not None and k not in allowed_keys:
+            continue
+        for col in comp_cols:
+            if col not in df_numeric.columns or col not in print_cols:
+                continue
+            cidx = print_cols.index(col)
+            vB = pd.to_numeric(df_numeric.iloc[rB][col], errors="coerce")
+            vA = pd.to_numeric(df_numeric.iloc[rA][col], errors="coerce") if rA is not None else np.nan
+            if pd.isna(vB):
+                continue
+            color = None
+            if pd.isna(vA):
+                if pd.notna(vB) and vB > 0:
+                    color = good
+            else:
+                if vB > vA:
+                    color = good
+                elif vB < vA:
+                    color = bad
+            if color:
+                cell_colors[cidx][rB] = color
+
+    return cell_colors
+
+# =========================
+# Excel export
+# =========================
 def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
     buf = io.BytesIO()
     try:
@@ -1204,6 +1285,20 @@ with tabs[1]:
             if key_col != "ad_unit" and key_col in agg.columns and key_col != "ad_name": rename_cols[key_col] = "ad_unit"
             agg = agg.rename(columns=rename_cols)
             if key_col == "ad_name" and "ad_unit" not in agg.columns: agg["ad_unit"] = agg["ad_name"]
+
+            # Fallback bắt buộc: luôn có cột ad_unit để so sánh
+            if "ad_unit" not in agg.columns:
+                if "ad_name" in agg.columns:
+                    agg["ad_unit"] = agg["ad_name"]
+                elif key_col in agg.columns:
+                    agg["ad_unit"] = agg[key_col]
+                else:
+                    st.error("Không tìm thấy cột để so sánh (ad_unit/ad_name). Vào 'Tùy chọn nâng cao' để chọn cột đúng hoặc bật mapping.")
+                    st.stop()
+
+            if "version" not in agg.columns:
+                st.error("Thiếu cột 'version' sau chuẩn hoá. Vui lòng chọn lại cột Version đúng.")
+                st.stop()
 
             setA = set(agg.loc[agg["version"].astype(str) == str(version_a), "ad_unit"])
             setB = set(agg.loc[agg["version"].astype(str) == str(version_b), "ad_unit"])
