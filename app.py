@@ -1462,17 +1462,48 @@ with tabs[1]:
                 pct_total = ((B["rpu_total"] - A["rpu_total"]) / A["rpu_total"]) if (pd.notna(A["rpu_total"]) and A["rpu_total"] > 0 and pd.notna(B["rpu_total"])) else np.nan
                 return dict(day_cols=day_cols, version_a=A, version_b=B, change_pct_per_day=pct_list, change_pct_total=pct_total)
 
-            def build_snapshot_obj(snapshot_name: str, df_view_local: pd.DataFrame, va: str, vb: str, df_src: pd.DataFrame, fb_df: Optional[pd.DataFrame]) -> dict:
-                detail_df = build_sheet_template_df(df_view_local)
-                daily = compute_daily_state(df_src, fb_df, va, vb)
-                snap = {
-                    "meta": {"name": snapshot_name, "created_at": datetime.now().isoformat(timespec="seconds"), "version_a": va, "version_b": vb, "row_count": int(len(df_view_local))},
-                    "daily": daily,
-                    "analysis_lines": analysis_lines_now,
-                    "table": {"columns": list(df_view_local.columns), "rows": df_view_local.fillna("").astype(object).astype(str).values.tolist()},
-                    "detail_table": {"columns": list(detail_df.columns), "rows": detail_df.fillna("").astype(object).astype(str).values.tolist()},
-                }
-                return snap
+                def df_to_string_rows(df: pd.DataFrame) -> list:
+    # Ép về object trước, thay NaN/NA bằng chuỗi rỗng, rồi ép sang str và lấy list
+    return (
+        df.astype(object)
+          .where(pd.notnull(df), "")
+          .astype(str)
+          .values
+          .tolist()
+    )
+
+            def build_snapshot_obj(snapshot_name: str,
+                       df_view_local: pd.DataFrame,
+                       va: str, vb: str,
+                       df_src: pd.DataFrame,
+                       fb_df: Optional[pd.DataFrame]) -> dict:
+    detail_df = build_sheet_template_df(df_view_local)
+    daily = compute_daily_state(df_src, fb_df, va, vb)
+
+    # CHỈNH Ở ĐÂY: dùng helper để chuyển DF → list string an toàn
+    table_rows = df_to_string_rows(df_view_local)
+    detail_rows = df_to_string_rows(detail_df)
+
+    snap = {
+        "meta": {
+            "name": snapshot_name,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "version_a": va,
+            "version_b": vb,
+            "row_count": int(len(df_view_local)),
+        },
+        "daily": daily,
+        "analysis_lines": analysis_lines_now,  # dùng biến có sẵn ở ngoài
+        "table": {
+            "columns": list(df_view_local.columns),
+            "rows": table_rows,
+        },
+        "detail_table": {
+            "columns": list(detail_df.columns),
+            "rows": detail_rows,
+        },
+    }
+    return snap
 
             # Local helpers
             def save_snapshot_local(snapshot: dict) -> str:
