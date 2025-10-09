@@ -1462,7 +1462,8 @@ with tabs[1]:
                 pct_total = ((B["rpu_total"] - A["rpu_total"]) / A["rpu_total"]) if (pd.notna(A["rpu_total"]) and A["rpu_total"] > 0 and pd.notna(B["rpu_total"])) else np.nan
                 return dict(day_cols=day_cols, version_a=A, version_b=B, change_pct_per_day=pct_list, change_pct_total=pct_total)
 
-                def df_to_string_rows(df: pd.DataFrame) -> list:
+
+            def df_to_string_rows(df: pd.DataFrame) -> list:
     # Ép về object trước, thay NaN/NA bằng chuỗi rỗng, rồi ép sang str và lấy list
     return (
         df.astype(object)
