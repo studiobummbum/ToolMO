@@ -24,22 +24,27 @@ st.set_page_config(page_title="MO Tool", layout="wide")
 # =========================
 SNAPSHOT_DIR = "snapshots"
 
+
 def safe_rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
 
+
 def _slug(s: str) -> str:
     s = str(s or "").strip()
     s = re.sub(r"[^\w\-.]+", "_", s)
     return s[:80] or "snapshot"
 
+
 def _ensure_snap_dir():
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
+
 def _snap_path(name: str) -> str:
     return os.path.join(SNAPSHOT_DIR, f"{_slug(name)}.json")
+
 
 # -------------------- Global CSS --------------------
 st.markdown(
@@ -54,6 +59,7 @@ st.markdown(
     }
     [data-testid="stDataFrame"] [role="columnheader"] * { color: #101828 !important; font-weight: 800 !important; }
     [data-testid="stDataFrame"] thead { box-shadow: 0 2px 0 rgba(0,0,0,0.06); }
+
     [data-testid="stDataFrame"] div[role="cell"] {
       white-space: normal !important;
       overflow-wrap: anywhere !important;
@@ -92,11 +98,13 @@ THOUSANDS_RE = re.compile(r"^\d{1,3}([.,]\d{3})+$")
 DECIMAL_COMMA_RE = re.compile(r"^\d+,\d+$")
 DECIMAL_DOT_RE = re.compile(r"^\d+\.\d+$")
 
+
 def strip_accents(s: str) -> str:
     if not isinstance(s, str):
         s = str(s)
     nfkd = unicodedata.normalize("NFD", s)
     return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+
 
 def normalize_key(s: str) -> str:
     s = str(s or "").strip()
@@ -107,6 +115,7 @@ def normalize_key(s: str) -> str:
     s = SPACE_RE.sub(" ", s)
     s = s.replace("—", "-").replace("–", "-")
     return s
+
 
 # =========================================
 # Canonical schema + synonyms
@@ -123,8 +132,11 @@ CANONICAL_MAP: Dict[str, List[str]] = {
     "platform": ["platform", "os", "nen tang"],
     "currency": ["currency", "currency code", "tien te", "ma tien te"],
     "estimated_earnings": [
-        "estimated earnings", "estimated earnings usd",
-        "doanh thu uoc tinh", "thu nhap uoc tinh", "thu nhap uoc tinh usd",
+        "estimated earnings",
+        "estimated earnings usd",
+        "doanh thu uoc tinh",
+        "thu nhap uoc tinh",
+        "thu nhap uoc tinh usd",
     ],
     "requests": ["ad requests", "requests", "yeu cau", "so yeu cau", "so luot yeu cau"],
     "matched_requests": ["matched requests", "matched ad requests", "so yeu cau da khop", "yeu cau da khop"],
@@ -134,7 +146,15 @@ CANONICAL_MAP: Dict[str, List[str]] = {
     "rpm_input": ["rpm"],
     "version": ["version", "app version", "app_ver", "ver", "build", "build version", "release"],
 }
-NATIVE_PREFIXES = ["native_language","native_language_dup","native_onboarding","native_onboarding_full","native_welcome","native_feature","native_permission"]
+NATIVE_PREFIXES = [
+    "native_language",
+    "native_language_dup",
+    "native_onboarding",
+    "native_onboarding_full",
+    "native_welcome",
+    "native_feature",
+    "native_permission",
+]
 ANALYZE_GROUPS = [
     ("inter_splash", "Interstitial Splash"),
     ("appopen_splash", "AppOpen Splash"),
@@ -145,6 +165,7 @@ ANALYZE_GROUPS = [
     ("native_onboarding_full", "Native Onboarding Full"),
 ]
 
+
 def build_reverse_map() -> Dict[str, str]:
     rev = {}
     for canon, variants in CANONICAL_MAP.items():
@@ -152,11 +173,14 @@ def build_reverse_map() -> Dict[str, str]:
             rev[normalize_key(v)] = canon
     return rev
 
+
 REVERSE_MAP = build_reverse_map()
 
 # ===================================
 # Readers
 # ===================================
+
+
 def try_read_csv(file_bytes: bytes) -> pd.DataFrame:
     bio = io.BytesIO(file_bytes)
     head = file_bytes[:4]
@@ -181,8 +205,10 @@ def try_read_csv(file_bytes: bytes) -> pd.DataFrame:
     bio.seek(0)
     return pd.read_csv(bio, dtype=str, engine="python", sep=None, encoding="utf-8", encoding_errors="ignore")
 
+
 def try_read_excel(file_bytes: bytes) -> pd.DataFrame:
     return pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+
 
 def read_any_table_from_name_bytes(name: str, b: bytes) -> pd.DataFrame:
     n = name.lower()
@@ -193,8 +219,10 @@ def read_any_table_from_name_bytes(name: str, b: bytes) -> pd.DataFrame:
             return pd.read_json(io.BytesIO(b))
         except ValueError:
             import json as _json
+
             return pd.json_normalize(_json.loads(b.decode("utf-8", errors="ignore")))
     return try_read_csv(b)
+
 
 def read_firebase_csv_bytes(b: bytes) -> pd.DataFrame:
     try:
@@ -218,6 +246,7 @@ def read_firebase_csv_bytes(b: bytes) -> pd.DataFrame:
     bio = io.StringIO(clean)
     df = pd.read_csv(bio, dtype=str, engine="python", sep=None)
     return df
+
 
 # ===================================
 # Header normalization and mapping
@@ -246,10 +275,10 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
             elif ("yeu cau da khop" in key) or (("matched" in key) and ("request" in key)):
                 target = "matched_requests"
             elif ("yeu cau" in key) or ("requests" in key):
-                if not any(b in key for b in ["gia thau","bidding","auction"]):
+                if not any(b in key for b in ["gia thau", "bidding", "auction"]):
                     target = "requests"
             elif ("hien thi" in key) or ("impressions" in key):
-                if any(b in key for b in ["tren moi","per ","rate"]):
+                if any(b in key for b in ["tren moi", "per ", "rate"]):
                     target = None
                 else:
                     target = "impressions"
@@ -277,6 +306,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.columns = mapped
     return out
+
 
 # ============================
 # Number parsing and KPI math
@@ -315,7 +345,9 @@ def to_numeric_series(s: pd.Series) -> pd.Series:
     vals = np.where(perc_mask, vals / 100.0, vals)
     return pd.Series(vals, index=s.index, dtype=float)
 
+
 NUMERIC_COLS = ["requests", "matched_requests", "impressions", "clicks", "estimated_earnings"]
+
 
 def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -323,6 +355,7 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
         if c in df.columns:
             df[c] = to_numeric_series(df[c])
     return df
+
 
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in df.columns:
@@ -353,12 +386,14 @@ def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     out["date"] = dt
     return out
 
-def ensure_metric_cols(df: pd.DataFrame) -> pd.DataFrame:
+
+def ensure_metric_cols(df: pd.DataFrame) -> pdDataFrame:
     df = df.copy()
     for c in NUMERIC_COLS:
         if c not in df.columns:
             df[c] = 0.0
     return df
+
 
 def compute_kpis(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -376,6 +411,7 @@ def compute_kpis(df: pd.DataFrame) -> pd.DataFrame:
     df["ecpm"] = (rev.divide(imp).where(imp > 0)) * 1000.0
     df["ctr"] = clk.divide(imp).where(imp > 0)
     return df
+
 
 def aggregate(df: pd.DataFrame, dims: List[str]) -> pd.DataFrame:
     """
@@ -412,10 +448,7 @@ def aggregate(df: pd.DataFrame, dims: List[str]) -> pd.DataFrame:
         return compute_kpis(uniq)
 
     # GROUP BY an toàn (không reset_index)
-    grouped = (
-        df.groupby(dims, dropna=False, as_index=False)[metrics_present]
-          .sum(min_count=1)
-    )
+    grouped = df.groupby(dims, dropna=False, as_index=False)[metrics_present].sum(min_count=1)
 
     # Bổ sung các metric chưa có cột (nếu thiếu)
     for m in metrics:
@@ -424,6 +457,7 @@ def aggregate(df: pd.DataFrame, dims: List[str]) -> pd.DataFrame:
 
     grouped = compute_kpis(grouped)
     return grouped.sort_values("estimated_earnings", ascending=False)
+
 
 # =========================
 # Loader + cache
@@ -456,6 +490,7 @@ def cached_prepare_any(files: List[Tuple[str, bytes]]) -> pd.DataFrame:
     df_all.attrs["dupe_dropped"] = int(dropped)
     return df_all
 
+
 # ================
 # Mapping helpers
 # ================
@@ -467,6 +502,7 @@ def try_read_mapping_file(uploaded_file) -> Optional[pd.DataFrame]:
         return try_read_excel(uploaded_file.getvalue())
     else:
         return try_read_csv(uploaded_file.getvalue())
+
 
 def parse_mapping_text(pasted_text: str) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
@@ -495,6 +531,7 @@ def parse_mapping_text(pasted_text: str) -> Dict[str, str]:
                 buf = None
     return mapping
 
+
 def build_mapping_dict(file, pasted_text: str) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     if file is not None:
@@ -514,32 +551,51 @@ def build_mapping_dict(file, pasted_text: str) -> Dict[str, str]:
     mapping.update(text_map)
     return mapping
 
+
 # ================
 # Pretty DF
 # ================
 def build_pretty_df(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-    def fmt_money(x): return "—" if pd.isna(x) else f"${x:,.2f}"
-    def fmt_int(x):   return "" if pd.isna(x) else f"{int(round(x)):,.0f}"
-    def fmt_pct(x):   return "" if pd.isna(x) else f"{x*100:,.2f}%"
-    def fmt_rpr(x):   return "" if pd.isna(x) else f"${x:,.6f}"
-    def fmt_num2(x):  return "" if pd.isna(x) else f"{x:,.2f}"
-    def fmt_num6(x):  return "" if pd.isna(x) else f"{x:,.6f}"
+    def fmt_money(x):
+        return "—" if pd.isna(x) else f"${x:,.2f}"
+
+    def fmt_int(x):
+        return "" if pd.isna(x) else f"{int(round(x)):,.0f}"
+
+    def fmt_pct(x):
+        return "" if pd.isna(x) else f"{x*100:,.2f}%"
+
+    def fmt_rpr(x):
+        return "" if pd.isna(x) else f"${x:,.6f}"
+
+    def fmt_num2(x):
+        return "" if pd.isna(x) else f"{x:,.2f}"
+
+    def fmt_num6(x):
+        return "" if pd.isna(x) else f"{x:,.6f}"
 
     out = df[cols].copy()
-    int_cols   = [c for c in ["requests", "matched_requests", "impressions", "clicks", "user", "new_user"] if c in out.columns]
+    int_cols = [c for c in ["requests", "matched_requests", "impressions", "clicks", "user", "new_user"] if c in out.columns]
     money_cols = [c for c in ["estimated_earnings", "ecpm", "rpm_1000req"] if c in out.columns]
-    pct_cols   = [c for c in ["match_rate", "show_rate_on_matched", "show_rate_on_request", "ctr"] if c in out.columns]
-    rpr_col    = [c for c in ["rpr"] if c in out.columns]
-    num2_cols  = [c for c in ["imp_per_user", "imp_per_new_user", "req_per_user", "req_per_new_user"] if c in out.columns]
-    num6_cols  = [c for c in ["rev_per_user", "rev_per_new_user"] if c in out.columns]
+    pct_cols = [c for c in ["match_rate", "show_rate_on_matched", "show_rate_on_request", "ctr"] if c in out.columns]
+    rpr_col = [c for c in ["rpr"] if c in out.columns]
+    num2_cols = [c for c in ["imp_per_user", "imp_per_new_user", "req_per_user", "req_per_new_user"] if c in out.columns]
+    num6_cols = [c for c in ["rev_per_user", "rev_per_new_user"] if c in out.columns]
 
-    for c in int_cols:   out[c] = out[c].apply(fmt_int)
-    for c in money_cols: out[c] = out[c].apply(fmt_money)
-    for c in pct_cols:   out[c] = out[c].apply(fmt_pct)
-    for c in rpr_col:    out[c] = out[c].apply(fmt_rpr)
-    for c in num2_cols:  out[c] = out[c].apply(fmt_num2)
-    for c in num6_cols:  out[c] = out[c].apply(fmt_num6)
+    for c in int_cols:
+        out[c] = out[c].apply(fmt_int)
+    for c in money_cols:
+        out[c] = out[c].apply(fmt_money)
+    for c in pct_cols:
+        out[c] = out[c].apply(fmt_pct)
+    for c in rpr_col:
+        out[c] = out[c].apply(fmt_rpr)
+    for c in num2_cols:
+        out[c] = out[c].apply(fmt_num2)
+    for c in num6_cols:
+        out[c] = out[c].apply(fmt_num6)
     return out
+
 
 # ================
 # Detail template DF (dùng cho snapshot)
@@ -552,46 +608,87 @@ def _num(series, ndigits=None, as_int=False):
         return s.round(ndigits)
     return s
 
+
 def build_sheet_template_df(df_view: pd.DataFrame) -> pd.DataFrame:
     get = lambda c: df_view[c] if c in df_view.columns else np.nan
-    exp = pd.DataFrame({
-        "App": get("app").astype(str) if "app" in df_view.columns else "",
-        "App ver": get("version").astype(str),
-        "Ad unit": get("ad_unit").astype(str),
-        "Ad name": (get("ad_name").astype(str) if "ad_name" in df_view.columns else get("ad_unit").astype(str)),
-        "Estimated $": _num(get("estimated_earnings"), ndigits=2),
-        "Observed eCPM $": _num(get("ecpm"), ndigits=2),
-        "Requests": _num(get("requests"), as_int=True),
-        "Match rate": _num(get("match_rate"), ndigits=4),
-        "Matched requests": _num(get("matched_requests"), as_int=True),
-        "Show rate": _num(get("show_rate_on_request"), ndigits=4),
-        "Impressions": _num(get("impressions"), as_int=True),
-        "CTR": _num(get("ctr"), ndigits=4),
-        "Clicks": _num(get("clicks"), as_int=True),
-        "user": _num(get("user"), as_int=True),
-        "new user": _num(get("new_user"), as_int=True),
-        "imp/user": _num(get("imp_per_user"), ndigits=4),
-        "imp/new user": _num(get("imp_per_new_user"), ndigits=4),
-        "req/user": _num(get("req_per_user"), ndigits=4),
-        "req/new user": _num(get("req_per_new_user"), ndigits=4),
-        "rev/user": _num(get("rev_per_user"), ndigits=6),
-        "rev/new user": _num(get("rev_per_new_user"), ndigits=6),
-    })
+    exp = pd.DataFrame(
+        {
+            "App": get("app").astype(str) if "app" in df_view.columns else "",
+            "App ver": get("version").astype(str),
+            "Ad unit": get("ad_unit").astype(str),
+            "Ad name": (get("ad_name").astype(str) if "ad_name" in df_view.columns else get("ad_unit").astype(str)),
+            "Estimated $": _num(get("estimated_earnings"), ndigits=2),
+            "Observed eCPM $": _num(get("ecpm"), ndigits=2),
+            "Requests": _num(get("requests"), as_int=True),
+            "Match rate": _num(get("match_rate"), ndigits=4),
+            "Matched requests": _num(get("matched_requests"), as_int=True),
+            "Show rate": _num(get("show_rate_on_request"), ndigits=4),
+            "Impressions": _num(get("impressions"), as_int=True),
+            "CTR": _num(get("ctr"), ndigits=4),
+            "Clicks": _num(get("clicks"), as_int=True),
+            "user": _num(get("user"), as_int=True),
+            "new user": _num(get("new_user"), as_int=True),
+            "imp/user": _num(get("imp_per_user"), ndigits=4),
+            "imp/new user": _num(get("imp_per_new_user"), ndigits=4),
+            "req/user": _num(get("req_per_user"), ndigits=4),
+            "req/new user": _num(get("req_per_new_user"), ndigits=4),
+            "rev/user": _num(get("rev_per_user"), ndigits=6),
+            "rev/new user": _num(get("rev_per_new_user"), ndigits=6),
+        }
+    )
     col_order = [
-        "App","App ver","Ad unit","Ad name",
-        "Estimated $","Observed eCPM $",
-        "Requests","Match rate","Matched requests","Show rate",
-        "Impressions","CTR","Clicks",
-        "user","new user",
-        "imp/user","imp/new user","req/user","req/new user","rev/user","rev/new user",
+        "App",
+        "App ver",
+        "Ad unit",
+        "Ad name",
+        "Estimated $",
+        "Observed eCPM $",
+        "Requests",
+        "Match rate",
+        "Matched requests",
+        "Show rate",
+        "Impressions",
+        "CTR",
+        "Clicks",
+        "user",
+        "new user",
+        "imp/user",
+        "imp/new user",
+        "req/user",
+        "req/new user",
+        "rev/user",
+        "rev/new user",
     ]
     exp = exp[col_order]
     return exp
 
+
 # ================
 # Column labels/config + renderer
 # ================
-LABEL_MAP = {"app":"App","version":"App version","ad_unit":"Ad unit","ad_name":"ad name","estimated_earnings":"Est. earnings (USD)","ecpm":"Observed eCPM (USD)","requests":"Requests","match_rate":"Match rate","matched_requests":"Matched requests","show_rate_on_request":"Show rate","impressions":"Impressions","ctr":"CTR","clicks":"Clicks","user":"user","new_user":"new user","imp_per_user":"imp/user","imp_per_new_user":"imp/new user","rev_per_user":"rev/user","rev_per_new_user":"rev/new user","req_per_user":"req/user","req_per_new_user":"req/new user"}
+LABEL_MAP = {
+    "app": "App",
+    "version": "App version",
+    "ad_unit": "Ad unit",
+    "ad_name": "ad name",
+    "estimated_earnings": "Est. earnings (USD)",
+    "ecpm": "Observed eCPM (USD)",
+    "requests": "Requests",
+    "match_rate": "Match rate",
+    "matched_requests": "Matched requests",
+    "show_rate_on_request": "Show rate",
+    "impressions": "Impressions",
+    "ctr": "CTR",
+    "clicks": "Clicks",
+    "user": "user",
+    "new_user": "new user",
+    "imp_per_user": "imp/user",
+    "imp_per_new_user": "imp/new user",
+    "rev_per_user": "rev/user",
+    "rev_per_new_user": "rev/new user",
+    "req_per_user": "req/user",
+    "req_per_new_user": "req/new user",
+}
 HELP_MAP = {
     "estimated_earnings": "Earnings: doanh thu ước tính.",
     "requests": "Ad requests.",
@@ -612,6 +709,7 @@ HELP_MAP = {
     "req_per_new_user": "requests / new user",
 }
 
+
 def build_column_config(cols: List[str]) -> Dict[str, object]:
     cfg: Dict[str, object] = {}
     for c in cols:
@@ -627,6 +725,7 @@ def build_column_config(cols: List[str]) -> Dict[str, object]:
             cfg[c] = st.column_config.Column(label=label, help=help_txt)
     return cfg
 
+
 def _wrap_for_plotly(val: str, width: int = 22) -> str:
     s = "" if val is None else str(val)
     if not s:
@@ -640,13 +739,14 @@ def _wrap_for_plotly(val: str, width: int = 22) -> str:
         parts.append(seg)
     return "<br>".join(parts)
 
+
 def render_table(df_print: pd.DataFrame, height: int, cell_colors: Optional[list] = None):
     if cell_colors is None:
         col_cfg = build_column_config(list(df_print.columns))
         st.dataframe(df_print, use_container_width=True, hide_index=True, column_config=col_cfg, height=height)
         return
     df_wrap = df_print.copy()
-    for col in [c for c in ["ad_name","ad_unit","app"] if c in df_wrap.columns]:
+    for col in [c for c in ["ad_name", "ad_unit", "app"] if c in df_wrap.columns]:
         df_wrap[col] = df_wrap[col].apply(lambda x: _wrap_for_plotly(x, width=22))
     header_color = "#eaf0ff"
     header_vals = [LABEL_MAP.get(c, c) for c in df_wrap.columns]
@@ -654,17 +754,22 @@ def render_table(df_print: pd.DataFrame, height: int, cell_colors: Optional[list
     for c in df_wrap.columns:
         if c == "ad_name":
             col_widths.append(320)
-        elif c in ("ad_unit","app"):
+        elif c in ("ad_unit", "app"):
             col_widths.append(160)
         else:
             col_widths.append(110)
-    fig = go.Figure(data=[go.Table(
-        columnwidth=col_widths,
-        header=dict(values=header_vals, fill_color=header_color, align="left", font=dict(color="#101828", size=12)),
-        cells=dict(values=[df_wrap[c] for c in df_wrap.columns], fill_color=cell_colors, align="left", height=30),
-    )])
+    fig = go.Figure(
+        data=[
+            go.Table(
+                columnwidth=col_widths,
+                header=dict(values=header_vals, fill_color=header_color, align="left", font=dict(color="#101828", size=12)),
+                cells=dict(values=[df_wrap[c] for c in df_wrap.columns], fill_color=cell_colors, align="left", height=30),
+            )
+        ]
+    )
     fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0), autosize=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
 
 # ================
 # Highlight cho Checkver
@@ -698,10 +803,7 @@ def build_checkver_cell_colors(
         else:
             allowed_row.append(key_of_row(r) in allowed_keys)
 
-    cell_colors = [[
-        (base_B if (ver[r] == str(version_b) and allowed_row[r]) else base_A)
-        for r in range(n_rows)
-    ] for _ in range(n_cols)]
+    cell_colors = [[(base_B if (ver[r] == str(version_b) and allowed_row[r]) else base_A) for r in range(n_rows)] for _ in range(n_cols)]
 
     idxA, idxB = {}, {}
     for r in range(n_rows):
@@ -713,9 +815,12 @@ def build_checkver_cell_colors(
 
     comp_cols = [
         "show_rate_on_request",
-        "req_per_user", "req_per_new_user",
-        "imp_per_user", "imp_per_new_user",
-        "rev_per_user", "rev_per_new_user",
+        "req_per_user",
+        "req_per_new_user",
+        "imp_per_user",
+        "imp_per_new_user",
+        "rev_per_user",
+        "rev_per_new_user",
     ]
 
     for k, rB in idxB.items():
@@ -744,6 +849,7 @@ def build_checkver_cell_colors(
 
     return cell_colors
 
+
 # =========================
 # Excel export
 # =========================
@@ -751,10 +857,12 @@ def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
     buf = io.BytesIO()
     try:
         import xlsxwriter  # noqa
+
         engine = "xlsxwriter"
     except Exception:
         try:
             import openpyxl  # noqa
+
             engine = "openpyxl"
         except Exception:
             raise ModuleNotFoundError("Thiếu engine Excel. Cài: pip install XlsxWriter hoặc pip install openpyxl")
@@ -763,6 +871,7 @@ def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
             df.to_excel(w, index=False, sheet_name=str(name)[:31])
     buf.seek(0)
     return buf.getvalue()
+
 
 def persist_active_tab(tab_labels: List[str]):
     try:
@@ -806,13 +915,14 @@ def persist_active_tab(tab_labels: List[str]):
     """
     st_html(js, height=0, width=0)
 
+
 # =========================
 # Global data source + filters (shared)
 # =========================
 st.title("MO Tool")
 
 with st.expander("Nguồn dữ liệu (dùng chung)", expanded=True):
-    up = st.file_uploader("Tải 1 hoặc nhiều file báo cáo (CSV/TXT/XLSX/XLS/JSON)", type=["csv","txt","xlsx","xls","json"], accept_multiple_files=True, key="global_upload")
+    up = st.file_uploader("Tải 1 hoặc nhiều file báo cáo (CSV/TXT/XLSX/XLS/JSON)", type=["csv", "txt", "xlsx", "xls", "json"], accept_multiple_files=True, key="global_upload")
     if up:
         files = [(f.name, f.getvalue()) for f in up]
         df_base = cached_prepare_any(files)
@@ -834,7 +944,7 @@ with st.sidebar:
         safe_rerun()
 
 with st.sidebar.expander("Mapping Ad unit → Ad name (dùng chung)", expanded=False):
-    map_file = st.file_uploader("Tệp mapping (CSV/XLSX)", type=["csv","txt","tsv","xlsx","xls"], key="global_mapfile")
+    map_file = st.file_uploader("Tệp mapping (CSV/XLSX)", type=["csv", "txt", "tsv", "xlsx", "xls"], key="global_mapfile")
     map_text = st.text_area("Hoặc dán 'code,name' (hoặc 2 dòng: code xuống dòng name)", height=150, key="global_maptext")
     current_dict = build_mapping_dict(map_file, map_text)
     if current_dict:
@@ -861,12 +971,14 @@ if isinstance(st.session_state.get("global_df_base"), pd.DataFrame) and not st.s
             if v is None:
                 return np.nan
             return st.session_state["ad_mapping_dict"].get(str(v).strip().upper(), np.nan)
+
         df_work["ad_name"] = df_work["ad_unit"].apply(map_code)
     else:
         if "ad_name" in df_work.columns:
             df_work = df_work.drop(columns=["ad_name"])
 else:
     df_work = None
+
 
 def apply_global_filters(dframe: pd.DataFrame) -> pd.DataFrame:
     if dframe is None or dframe.empty:
@@ -881,6 +993,7 @@ def apply_global_filters(dframe: pd.DataFrame) -> pd.DataFrame:
             if isinstance(dr, tuple) and len(dr) == 2:
                 start, end = pd.to_datetime(dr[0]), pd.to_datetime(dr[1])
                 df = df[(df["date"] >= start) & (df["date"] <= end)]
+
         def multiselect_filter(label, col, dframe):
             if col in dframe.columns:
                 opts = sorted([x for x in dframe[col].dropna().unique() if str(x).strip() != ""])
@@ -888,6 +1001,7 @@ def apply_global_filters(dframe: pd.DataFrame) -> pd.DataFrame:
                 if selected:
                     return dframe[dframe[col].isin(selected)]
             return dframe
+
         df = multiselect_filter("Currency", "currency", df)
         df = multiselect_filter("App", "app", df)
         if "ad_name" in df.columns:
@@ -900,6 +1014,7 @@ def apply_global_filters(dframe: pd.DataFrame) -> pd.DataFrame:
         if "version" in df.columns:
             df = multiselect_filter("Version (lọc trước khi so sánh)", "version", df)
     return df
+
 
 if df_work is not None:
     st.session_state["global_df"] = apply_global_filters(df_work)
@@ -915,14 +1030,14 @@ st.markdown(f"<style>.block-container{{max-width:{max_width}px !important;}}</st
 # Sidebar: Snapshot storage (Local / GitHub)
 # =========================
 with st.sidebar.expander("Snapshot storage", expanded=False):
-    st.session_state["snap_storage"] = st.radio("Chọn nơi lưu", ["Local", "GitHub Repo"], index=0 if st.session_state.get("snap_storage")!="GitHub Repo" else 1)
+    st.session_state["snap_storage"] = st.radio("Chọn nơi lưu", ["Local", "GitHub Repo"], index=0 if st.session_state.get("snap_storage") != "GitHub Repo" else 1)
     if st.session_state["snap_storage"] == "GitHub Repo":
         st.info("Dùng Personal Access Token (PAT) có scope repo. Nên dùng repo Private.")
-        st.session_state["gh_token"]  = st.text_input("GitHub PAT (repo scope)", type="password", value=st.session_state.get("gh_token",""))
-        st.session_state["gh_owner"]  = st.text_input("Owner/Org", value=st.session_state.get("gh_owner",""))
-        st.session_state["gh_repo"]   = st.text_input("Repo", value=st.session_state.get("gh_repo",""))
-        st.session_state["gh_branch"] = st.text_input("Branch", value=st.session_state.get("gh_branch","main"))
-        st.session_state["gh_folder"] = st.text_input("Folder trong repo", value=st.session_state.get("gh_folder","snapshots"))
+        st.session_state["gh_token"] = st.text_input("GitHub PAT (repo scope)", type="password", value=st.session_state.get("gh_token", ""))
+        st.session_state["gh_owner"] = st.text_input("Owner/Org", value=st.session_state.get("gh_owner", ""))
+        st.session_state["gh_repo"] = st.text_input("Repo", value=st.session_state.get("gh_repo", ""))
+        st.session_state["gh_branch"] = st.text_input("Branch", value=st.session_state.get("gh_branch", "main"))
+        st.session_state["gh_folder"] = st.text_input("Folder trong repo", value=st.session_state.get("gh_folder", "snapshots"))
 
 # =========================
 # Tabs
@@ -942,7 +1057,7 @@ with tabs[0]:
     if df is None or df.empty:
         st.info("Chưa có dữ liệu sau bộ lọc chung.")
     else:
-       def fmt_money(x):
+        def fmt_money(x):
             try:
                 return f"${x:,.2f}"
             except Exception:
@@ -953,6 +1068,7 @@ with tabs[0]:
 
         def fmt_float(x):
             return f"{x:,.6f}" if pd.notnull(x) else "—"
+
         total = aggregate(df, [])
         tot = total.iloc[0]
         c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -966,9 +1082,9 @@ with tabs[0]:
         c7.metric("RPR (Rev/Request)", fmt_float(tot.get("rpr")))
         c8.metric("RPM (per 1000 req)", fmt_money(tot.get("rpm_1000req", 0.0)))
         c9.metric("CTR", fmt_pct(tot.get("ctr")))
-        dims_all = ["date","app","ad_name","ad_format","ad_unit","country","ad_source","platform","currency","version"]
+        dims_all = ["date", "app", "ad_name", "ad_format", "ad_unit", "country", "ad_source", "platform", "currency", "version"]
         dims_available = [d for d in dims_all if d in df.columns]
-        default_dims = [d for d in dims_available if d not in ("date","currency")][:2]
+        default_dims = [d for d in dims_available if d not in ("date", "currency")][:2]
         group_dims = st.multiselect("Nhóm theo (tối đa 3)", options=dims_available, default=default_dims, max_selections=3)
         show_code = False
         if "ad_name" in df.columns and ("ad_name" in group_dims) and ("ad_unit" not in group_dims):
@@ -983,12 +1099,13 @@ with tabs[0]:
                     return vals[0]
                 short = ";".join(sorted(vals)[:3])
                 return short + ("…" if len(vals) > 3 else "")
-            code_map = df.groupby(group_dims, dropna=False)["ad_unit"].agg(summarize_codes).reset_index().rename(columns={"ad_unit":"ad_unit_code"})
+
+            code_map = df.groupby(group_dims, dropna=False)["ad_unit"].agg(summarize_codes).reset_index().rename(columns={"ad_unit": "ad_unit_code"})
             agg_df = agg_df.merge(code_map, on=group_dims, how="left")
-        display_cols = group_dims + ["estimated_earnings","requests","matched_requests","impressions","clicks","match_rate","show_rate_on_matched","show_rate_on_request","rpr","rpm_1000req","ecpm","ctr"]
+        display_cols = group_dims + ["estimated_earnings", "requests", "matched_requests", "impressions", "clicks", "match_rate", "show_rate_on_matched", "show_rate_on_request", "rpr", "rpm_1000req", "ecpm", "ctr"]
         if show_code and "ad_unit_code" in agg_df.columns and "ad_name" in group_dims:
             idx = group_dims.index("ad_name")
-            display_cols = group_dims[:idx+1] + ["ad_unit_code"] + group_dims[idx+1:] + ["estimated_earnings","requests","matched_requests","impressions","clicks","match_rate","show_rate_on_matched","show_rate_on_request","rpr","rpm_1000req","ecpm","ctr"]
+            display_cols = group_dims[: idx + 1] + ["ad_unit_code"] + group_dims[idx + 1 :] + ["estimated_earnings", "requests", "matched_requests", "impressions", "clicks", "match_rate", "show_rate_on_matched", "show_rate_on_request", "rpr", "rpm_1000req", "ecpm", "ctr"]
         display_cols = [c for c in display_cols if c in agg_df.columns]
         show_pretty = st.checkbox("Hiển thị số đẹp (%, tiền, dấu phẩy)", value=True, key="pretty_manual")
         show_stt = st.checkbox("Hiển thị STT", value=False, key="stt_manual")
@@ -1011,9 +1128,9 @@ with tabs[0]:
         if "date" in df.columns and valid_dates > 0:
             ts = aggregate(df, ["date"]).sort_values("date")
             st.plotly_chart(px.line(ts, x="date", y="estimated_earnings", title="Earnings theo ngày"), use_container_width=True)
-            metric_options = ["estimated_earnings","requests","impressions","rpr","ecpm","match_rate","show_rate_on_matched","ctr"]
+            metric_options = ["estimated_earnings", "requests", "impressions", "rpr", "ecpm", "match_rate", "show_rate_on_matched", "ctr"]
             metric_pick = st.selectbox("Chọn metric", metric_options, index=0, key="chart_metric")
-            colorable = [d for d in ["ad_name","ad_unit","ad_format","country","app","ad_source","platform","currency","version"] if d in df.columns]
+            colorable = [d for d in ["ad_name", "ad_unit", "ad_format", "country", "app", "ad_source", "platform", "currency", "version"] if d in df.columns]
             color_dim = st.selectbox("Phân rã theo", ["(none)"] + colorable, index=0, key="chart_color")
             color_dim = None if color_dim == "(none)" else color_dim
             dims = ["date"] + ([color_dim] if color_dim else [])
@@ -1030,24 +1147,25 @@ def normalize_fb_columns(df: pd.DataFrame) -> pd.DataFrame:
     col_map = {}
     for c in df.columns:
         k = normalize_key(c)
-        if k in {"app","ung dung","application","app name"} and "app" not in col_map:
+        if k in {"app", "ung dung", "application", "app name"} and "app" not in col_map:
             col_map["app"] = c
         elif ("version" in k or "build" in k or "release" in k) and "version" not in col_map:
             col_map["version"] = c
-        elif any(x in k for x in ["new user","newuser","first_open","first open","new users"]) and "new_user" not in col_map:
+        elif any(x in k for x in ["new user", "newuser", "first_open", "first open", "new users"]) and "new_user" not in col_map:
             col_map["new_user"] = c
-        elif any(x in k for x in ["active user","active users","user","users","dau"]) and "user" not in col_map:
+        elif any(x in k for x in ["active user", "active users", "user", "users", "dau"]) and "user" not in col_map:
             col_map["user"] = c
-    out = df.copy().rename(columns={v:k for k,v in col_map.items()})
-    keep = [c for c in ["app","version","user","new_user"] if c in out.columns]
+    out = df.copy().rename(columns={v: k for k, v in col_map.items()] )
+    keep = [c for c in ["app", "version", "user", "new_user"] if c in out.columns]
     out = out[keep]
-    for c in ["user","new_user"]:
+    for c in ["user", "new_user"]:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
-    for c in ["app","version"]:
+    for c in ["app", "version"]:
         if c in out.columns:
             out[c] = out[c].astype(str).str.strip()
     return out
+
 
 def load_firebase_df(uploaded_files) -> Optional[pd.DataFrame]:
     if not uploaded_files:
@@ -1056,9 +1174,9 @@ def load_firebase_df(uploaded_files) -> Optional[pd.DataFrame]:
     for f in uploaded_files:
         name = getattr(f, "name", "").lower()
         try:
-            if name.endswith((".csv",".txt",".tsv")):
+            if name.endswith((".csv", ".txt", ".tsv")):
                 df_raw = read_firebase_csv_bytes(f.getvalue())
-            elif name.endswith((".xlsx",".xls",".json")):
+            elif name.endswith((".xlsx", ".xls", ".json")):
                 df_raw = read_any_table_from_name_bytes(f.name, f.getvalue())
             else:
                 df_raw = read_firebase_csv_bytes(f.getvalue())
@@ -1072,41 +1190,45 @@ def load_firebase_df(uploaded_files) -> Optional[pd.DataFrame]:
     if not frames:
         return None
     fb = pd.concat(frames, ignore_index=True)
-    keys = [c for c in ["app","version"] if c in fb.columns]
+    keys = [c for c in ["app", "version"] if c in fb.columns]
     if not keys:
         return None
-    for c in ["user","new_user"]:
+    for c in ["user", "new_user"]:
         if c not in fb.columns:
             fb[c] = np.nan
-    agg = fb.groupby(keys, dropna=False)[["user","new_user"]].sum(min_count=1).reset_index()
+    agg = fb.groupby(keys, dropna=False)[["user", "new_user"]].sum(min_count=1).reset_index()
     for c in keys:
         agg[c] = agg[c].astype(str).str.strip()
     return agg
+
 
 def detect_version_col(df: pd.DataFrame) -> Optional[str]:
     cands = []
     for c in df.columns:
         lc = c.lower().strip()
-        if lc in {"version","app ver","app_ver","ver","build","build version","release"}:
+        if lc in {"version", "app ver", "app_ver", "ver", "build", "build version", "release"}:
             return c
         if "version" in lc or "build" in lc or "release" in lc:
             cands.append(c)
     return cands[0] if cands else None
 
+
 def detect_key_col(df: pd.DataFrame) -> str:
     cands = []
     for c in df.columns:
         lc = c.lower()
-        if lc in {"ad_unit_id","ad_unit"} or ("ad" in lc and "unit" in lc):
+        if lc in {"ad_unit_id", "ad_unit"} or ("ad" in lc and "unit" in lc):
             cands.append(c)
-    ordered = sorted(set(cands), key=lambda x: (x.lower() not in {"ad_unit_id","ad_unit"}, x.lower()))
+    ordered = sorted(set(cands), key=lambda x: (x.lower() not in {"ad_unit_id", "ad_unit"}, x.lower()))
     return ordered[0] if ordered else df.columns[0]
+
 
 def version_tuple(v: str) -> Tuple[int, ...]:
     v = str(v or "")
     parts = re.split(r"[^\d]+", v)
     nums = tuple(int(p) for p in parts if p.isdigit())
     return nums if nums else (0,)
+
 
 def apply_native_rev_rule(df: pd.DataFrame, mapping_applied: bool) -> pd.DataFrame:
     if df is None or df.empty or not mapping_applied:
@@ -1119,22 +1241,24 @@ def apply_native_rev_rule(df: pd.DataFrame, mapping_applied: bool) -> pd.DataFra
     if "ad_unit" in df.columns:
         mask_native = mask_native | df["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
     mask_other = ~mask_native
-    for col in ["imp_per_user","req_per_user","rev_per_user"]:
+    for col in ["imp_per_user", "req_per_user", "rev_per_user"]:
         if col in df.columns:
             df.loc[mask_native, col] = np.nan
-    for col in ["imp_per_new_user","req_per_new_user","rev_per_new_user"]:
+    for col in ["imp_per_new_user", "req_per_new_user", "rev_per_new_user"]:
         if col in df.columns:
             df.loc[mask_other, col] = np.nan
     return df
 
+
 def _pair_key(ver_a: str, ver_b: str) -> str:
     return f"{str(ver_a)}__{str(ver_b)}"
+
 
 def to_cent(val) -> Decimal:
     if val is None:
         return Decimal("0.00")
     s = str(val).strip()
-    if s == "" or s.lower() in {"nan","none","-"}:
+    if s == "" or s.lower() in {"nan", "none", "-"}:
         return Decimal("0.00")
     if "." in s and "," in s:
         s = s.replace(",", "")
@@ -1149,11 +1273,13 @@ def to_cent(val) -> Decimal:
             d = Decimal("0.00")
     return d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+
 def _fmt_mdy(date_iso: str) -> str:
     dt = pd.to_datetime(date_iso, errors="coerce")
     if pd.isna(dt):
         return str(date_iso)
     return f"{dt.month}/{dt.day}/{dt.year}"
+
 
 def _init_daily_dates(df_src: pd.DataFrame, version_a: str, version_b: str, n_default: int = 4) -> list:
     if df_src is None or df_src.empty or "date" not in df_src.columns or "version" not in df_src.columns:
@@ -1170,11 +1296,12 @@ def _init_daily_dates(df_src: pd.DataFrame, version_a: str, version_b: str, n_de
     pick = uniq[-n_default:] if len(uniq) >= n_default else uniq
     return [x.isoformat() for x in pick]
 
+
 def _daily_revenue_map(df_src: pd.DataFrame, version_list: List[str]) -> Dict[Tuple[str, str], float]:
     out_dec: Dict[Tuple[str, str], Decimal] = {}
     if df_src is None or df_src.empty:
         return {}
-    need = {"version","date","estimated_earnings"}
+    need = {"version", "date", "estimated_earnings"}
     if not need.issubset(set(df_src.columns)):
         return {}
     d = df_src.copy()
@@ -1188,6 +1315,7 @@ def _daily_revenue_map(df_src: pd.DataFrame, version_list: List[str]) -> Dict[Tu
         amount = to_cent(r.get("estimated_earnings", 0))
         out_dec[key] = out_dec.get(key, Decimal("0.00")) + amount
     return {k: float(v) for k, v in out_dec.items()}
+
 
 def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, version: str) -> tuple:
     if not isinstance(fb_df, pd.DataFrame) or fb_df.empty or "version" not in fb_df.columns:
@@ -1208,11 +1336,13 @@ def _fb_totals_for_version(fb_df: Optional[pd.DataFrame], df_src: pd.DataFrame, 
     nu = float(nu) if pd.notna(nu) else None
     return (u, nu)
 
+
 def df_to_string_rows(df: pd.DataFrame) -> list:
     df2 = df.astype(object)
     df2 = df2.where(pd.notnull(df2), "")
     df2 = df2.astype(str)
     return df2.values.tolist()
+
 
 def render_daily_checkver_table(df_src: pd.DataFrame, fb_df: Optional[pd.DataFrame], version_a: str, version_b: str, section_title: str = "Bảng theo ngày (rev auto từ AdMob; nhập user/new user)"):
     st.markdown("---")
@@ -1226,13 +1356,13 @@ def render_daily_checkver_table(df_src: pd.DataFrame, fb_df: Optional[pd.DataFra
         rev_map = _daily_revenue_map(df_src, [version_a, version_b])
         user_total_a, _ = _fb_totals_for_version(fb_df, df_src, version_a)
         user_total_b, _ = _fb_totals_for_version(fb_df, df_src, version_b)
-        cols = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+        cols = st.columns([1] + [1] * n + [0.2, 1, 0.8])
         cols[0].markdown(" ")
         for i, d in enumerate(day_cols):
-            cols[1+i].markdown(f"**{_fmt_mdy(d)}**")
-        cols[1+n].markdown(" ")
-        cols[2+n].markdown("**Tổng**")
-        with cols[3+n]:
+            cols[1 + i].markdown(f"**{_fmt_mdy(d)}**")
+        cols[1 + n].markdown(" ")
+        cols[2 + n].markdown("**Tổng**")
+        with cols[3 + n]:
             if st.button("➕ Thêm ngày", key=f"btn_add_day_{pair_key}"):
                 if len(day_cols) > 0:
                     last = max(pd.to_datetime(x) for x in day_cols)
@@ -1242,62 +1372,68 @@ def render_daily_checkver_table(df_src: pd.DataFrame, fb_df: Optional[pd.DataFra
                 day_cols.append(nxt)
                 st.session_state["checkver_daycols"][pair_key] = day_cols
                 safe_rerun()
+
         def block_for_version(version: str, fb_total_user: Optional[float], tint: str):
             st.markdown(f"**Phiên bản {version}**")
-            row1 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row1 = st.columns([1] + [1] * n + [0.2, 1, 0.8])
             row1[0].markdown("rev")
             total_rev_dec = Decimal("0.00")
             rev_inputs = []
             for i, d in enumerate(day_cols):
                 default_rev = float(rev_map.get((str(version), d), 0.0))
-                val = row1[1+i].number_input(label=f"rev_{version}_{d}", value=float(to_cent(default_rev)), step=0.01, format="%.2f", key=f"rev_in_{version}_{d}")
+                val = row1[1 + i].number_input(label=f"rev_{version}_{d}", value=float(to_cent(default_rev)), step=0.01, format="%.2f", key=f"rev_in_{version}_{d}")
                 rev_inputs.append(val)
                 total_rev_dec += to_cent(val)
-            row1[1+n].markdown(" ")
+            row1[1 + n].markdown(" ")
             total_rev = float(total_rev_dec)
-            row1[2+n].markdown(f"**{total_rev:,.2f}**")
-            row2 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row1[2 + n].markdown(f"**{total_rev:,.2f}**")
+
+            row2 = st.columns([1] + [1] * n + [0.2, 1, 0.8])
             row2[0].markdown(f"<div style='background:{tint};padding:2px 6px;border-radius:4px'>user</div>", unsafe_allow_html=True)
             user_inputs = []
             for i, d in enumerate(day_cols):
-                u = row2[1+i].number_input(label=f"user_{version}_{d}", value=0.0, step=1.0, format="%.0f", key=f"user_in_{version}_{d}")
+                u = row2[1 + i].number_input(label=f"user_{version}_{d}", value=0.0, step=1.0, format="%.0f", key=f"user_in_{version}_{d}")
                 user_inputs.append(u)
-            row2[1+n].markdown(" ")
+            row2[1 + n].markdown(" ")
             shown_user_total = fb_total_user if fb_total_user is not None else float(np.nansum(user_inputs))
-            row2[2+n].markdown(f"**{shown_user_total:,.0f}**" if pd.notna(shown_user_total) else "**—**")
-            row3 = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+            row2[2 + n].markdown(f"**{shown_user_total:,.0f}**" if pd.notna(shown_user_total) else "**—**")
+
+            row3 = st.columns([1] + [1] * n + [0.2, 1, 0.8])
             row3[0].markdown("rev/user (USD)")
             rpu_list = []
             for i in range(n):
                 v = (rev_inputs[i] / user_inputs[i]) if (user_inputs[i] and user_inputs[i] > 0) else np.nan
                 rpu_list.append(v)
-                row3[1+i].markdown(f"{v:,.6f}" if pd.notna(v) else "—")
-            row3[1+n].markdown(" ")
+                row3[1 + i].markdown(f"{v:,.6f}" if pd.notna(v) else "—")
+            row3[1 + n].markdown(" ")
             rpu_total = (total_rev / shown_user_total) if (shown_user_total and shown_user_total > 0) else np.nan
-            row3[2+n].markdown(f"**{rpu_total:,.6f}**" if pd.notna(rpu_total) else "**—**")
+            row3[2 + n].markdown(f"**{rpu_total:,.6f}**" if pd.notna(rpu_total) else "**—**")
             return dict(rev_inputs=rev_inputs, user_inputs=user_inputs, rpu_list=rpu_list, rpu_total=rpu_total, total_rev=total_rev, shown_user_total=shown_user_total)
+
         st.markdown(" ")
         data_a = block_for_version(version_a, user_total_a, tint="#F6EBD9")
         st.markdown(" ")
         data_b = block_for_version(version_b, user_total_b, tint="#FFF2CC")
         st.markdown(" ")
-        cols_change = st.columns([1] + [1]*n + [0.2, 1, 0.8])
+        cols_change = st.columns([1] + [1] * n + [0.2, 1, 0.8])
         cols_change[0].markdown(f"**Thay đổi rev/user {version_b} so {version_a} (%)**")
+
         def pct_badge(pct_val: float) -> str:
             if pd.isna(pct_val):
                 return "—"
             color = "#22c55e" if pct_val > 0 else ("#fb923c" if pct_val < 0 else "#e2e8f0")
             return f"<div style='background:{color};color:#111827;padding:2px 6px;border-radius:4px;text-align:center'>{(pct_val*100):.2f}%</div>"
+
         for i in range(n):
             a_rpu = data_a["rpu_list"][i]
             b_rpu = data_b["rpu_list"][i]
             pct = ((b_rpu - a_rpu) / a_rpu) if (pd.notna(a_rpu) and a_rpu > 0) else np.nan
-            cols_change[1+i].markdown(pct_badge(pct), unsafe_allow_html=True)
-        cols_change[1+n].markdown(" ")
+            cols_change[1 + i].markdown(pct_badge(pct), unsafe_allow_html=True)
+        cols_change[1 + n].markdown(" ")
         a_total_rpu = data_a["rpu_total"]
         b_total_rpu = data_b["rpu_total"]
         pct_total = ((b_total_rpu - a_total_rpu) / a_total_rpu) if (pd.notna(a_total_rpu) and a_total_rpu > 0) else np.nan
-        cols_change[2+n].markdown(pct_badge(pct_total), unsafe_allow_html=True)
+        cols_change[2 + n].markdown(pct_badge(pct_total), unsafe_allow_html=True)
 
 # =========================
 # TAB 2: Checkver
@@ -1307,7 +1443,7 @@ with tabs[1]:
 
     with st.expander("Dữ liệu Firebase (users/new users) — tuỳ chọn", expanded=False):
         st.caption("Upload CSV/XLSX/TXT/JSON có 'App version' và số Active/New users.")
-        fb_files = st.file_uploader("Upload Firebase files", type=["csv","txt","tsv","xlsx","xls","json"], accept_multiple_files=True, key="fb_upload")
+        fb_files = st.file_uploader("Upload Firebase files", type=["csv", "txt", "tsv", "xlsx", "xls", "json"], accept_multiple_files=True, key="fb_upload")
         if st.button("Nạp Firebase", use_container_width=False):
             st.session_state["firebase_df"] = load_firebase_df(fb_files)
             if st.session_state["firebase_df"] is None or st.session_state["firebase_df"].empty:
@@ -1321,7 +1457,7 @@ with tabs[1]:
         st.info("Chưa có dữ liệu sau bộ lọc chung.")
     else:
         ver_col_auto = detect_version_col(df_all) or ("version" if "version" in df_all.columns else df_all.columns[0])
-        if any(c in df_all.columns for c in ["ad_unit","ad_unit_id"]):
+        if any(c in df_all.columns for c in ["ad_unit", "ad_unit_id"]):
             key_col_auto = detect_key_col(df_all)
         elif "ad_name" in df_all.columns:
             key_col_auto = "ad_name"
@@ -1332,7 +1468,7 @@ with tabs[1]:
 
         with st.expander("Tùy chọn nâng cao (chỉ mở nếu phát hiện sai)", expanded=False):
             ver_col = st.selectbox("Cột Version", options=list(df_all.columns), index=list(df_all.columns).index(ver_col))
-            compare_choice = st.radio("So sánh theo", options=["Tự động","Ad unit","Ad name"], index=0, horizontal=True)
+            compare_choice = st.radio("So sánh theo", options=["Tự động", "Ad unit", "Ad name"], index=0, horizontal=True)
             if compare_choice == "Ad unit":
                 ad_candidates = [c for c in df_all.columns if ("ad" in c.lower() and "unit" in c.lower())] or list(df_all.columns)
                 key_col = st.selectbox("Cột Ad unit", options=ad_candidates, index=ad_candidates.index(key_col) if key_col in ad_candidates else 0)
@@ -1392,7 +1528,7 @@ with tabs[1]:
                 st.session_state["checkver_search"] = st.text_input("Lọc theo từ khoá (trên Ad unit/Ad name)", value=st.session_state.get("checkver_search", ""))
             with c_clear:
                 st.markdown("&nbsp;", unsafe_allow_html=True)
-                if st.button("✕", help="Xoá bộ lọc từ khoá"):
+                if st.button("✕", help="Xóa bộ lọc từ khoá"):
                     st.session_state["checkver_search"] = ""
                     safe_rerun()
             search = st.session_state["checkver_search"].strip().lower()
@@ -1411,7 +1547,7 @@ with tabs[1]:
                 df_view = agg[agg["version"].isin([version_a, version_b])].copy()
 
             if search:
-                cols_s = [c for c in ["ad_unit","ad_name"] if c in df_view.columns]
+                cols_s = [c for c in ["ad_unit", "ad_name"] if c in df_view.columns]
                 if cols_s:
                     mask = False
                     for c in cols_s:
@@ -1428,25 +1564,47 @@ with tabs[1]:
 
             fb_df: Optional[pd.DataFrame] = st.session_state.get("firebase_df")
             if isinstance(fb_df, pd.DataFrame) and not fb_df.empty:
-                join_keys = [k for k in ["app","version"] if k in df_view.columns and k in fb_df.columns]
+                join_keys = [k for k in ["app", "version"] if k in df_view.columns and k in fb_df.columns]
                 if join_keys:
                     df_view = df_view.merge(fb_df, on=join_keys, how="left")
-            for c in ["user","new_user"]:
+            for c in ["user", "new_user"]:
                 if c not in df_view.columns:
                     df_view[c] = np.nan
 
             user = pd.to_numeric(df_view["user"], errors="coerce")
             new_user = pd.to_numeric(df_view["new_user"], errors="coerce")
-            df_view["imp_per_user"]     = df_view["impressions"].astype(float).divide(user).where(user > 0)
+            df_view["imp_per_user"] = df_view["impressions"].astype(float).divide(user).where(user > 0)
             df_view["imp_per_new_user"] = df_view["impressions"].astype(float).divide(new_user).where(new_user > 0)
-            df_view["rev_per_user"]     = df_view["estimated_earnings"].astype(float).divide(user).where(user > 0)
+            df_view["rev_per_user"] = df_view["estimated_earnings"].astype(float).divide(user).where(user > 0)
             df_view["rev_per_new_user"] = df_view["estimated_earnings"].astype(float).divide(new_user).where(new_user > 0)
-            df_view["req_per_user"]     = df_view["requests"].astype(float).divide(user).where(user > 0)
+            df_view["req_per_user"] = df_view["requests"].astype(float).divide(user).where(user > 0)
             df_view["req_per_new_user"] = df_view["requests"].astype(float).divide(new_user).where(new_user > 0)
 
             df_view = apply_native_rev_rule(df_view, mapping_applied=bool(st.session_state.get("ad_mapping_applied")))
 
-            ordered_cols = ["app","version","ad_unit","ad_name","estimated_earnings","ecpm","requests","match_rate","matched_requests","show_rate_on_request","impressions","ctr","clicks","user","new_user","imp_per_user","imp_per_new_user","rev_per_user","rev_per_new_user","req_per_user","req_per_new_user"]
+            ordered_cols = [
+                "app",
+                "version",
+                "ad_unit",
+                "ad_name",
+                "estimated_earnings",
+                "ecpm",
+                "requests",
+                "match_rate",
+                "matched_requests",
+                "show_rate_on_request",
+                "impressions",
+                "ctr",
+                "clicks",
+                "user",
+                "new_user",
+                "imp_per_user",
+                "imp_per_new_user",
+                "rev_per_user",
+                "rev_per_new_user",
+                "req_per_user",
+                "req_per_new_user",
+            ]
             for c in ordered_cols:
                 if c not in df_view.columns:
                     df_view[c] = np.nan
@@ -1464,10 +1622,10 @@ with tabs[1]:
                 mask_pref = df_view["ad_unit"].astype(str).str.lower().str.startswith(prefixes)
                 if "ad_name" in df_view.columns:
                     mask_pref = mask_pref | df_view["ad_name"].astype(str).str.lower().str.startswith(prefixes)
-                id_cols = [c for c in ["app","ad_unit"] if c in df_view.columns] or [c for c in ["app","ad_name"] if c in df_view.columns] or ["ad_unit"]
+                id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns] or [c for c in ["app", "ad_name"] if c in df_view.columns] or ["ad_unit"]
                 allowed_keys = set(tuple(row[c] if c in df_view.columns else None for c in id_cols) for _, row in df_view[mask_pref].iterrows())
             else:
-                id_cols = [c for c in ["app","ad_unit"] if c in df_view.columns] or [c for c in ["app","ad_name"] if c in df_view.columns] or ["ad_unit"]
+                id_cols = [c for c in ["app", "ad_unit"] if c in df_view.columns] or [c for c in ["app", "ad_name"] if c in df_view.columns] or ["ad_unit"]
                 allowed_keys = None
 
             print_cols = list(df_print.columns)
@@ -1483,8 +1641,10 @@ with tabs[1]:
             # ---------- PHÂN TÍCH CHECKVER ----------
             st.markdown("---")
             st.subheader("Phân tích checkver")
+
             def compute_analysis_lines(df_view_local: pd.DataFrame, va: str, vb: str) -> list:
                 base = df_view_local.copy()
+
                 def agg_group(ver: str, prefix: str) -> Dict[str, float]:
                     d = base[base["version"].astype(str) == ver].copy()
                     mask = d["ad_unit"].astype(str).str.lower().str.startswith(prefix)
@@ -1500,20 +1660,23 @@ with tabs[1]:
                     rev = pd.to_numeric(d["estimated_earnings"], errors="coerce").sum(min_count=1)
                     user = pd.to_numeric(d["user"], errors="coerce").sum(min_count=1)
                     newu = pd.to_numeric(d["new_user"], errors="coerce").sum(min_count=1)
-                    mr = mreq/req if req>0 else np.nan
-                    sr = imp/req if req>0 else np.nan
-                    ctr = clk/imp if imp>0 else np.nan
-                    imp_user = imp/user if user>0 else np.nan
-                    imp_new  = imp/newu if newu>0 else np.nan
-                    req_user = req/user if user>0 else np.nan
-                    req_new  = req/newu if newu>0 else np.nan
-                    rev_user = rev/user if user>0 else np.nan
-                    rev_new  = rev/newu if newu>0 else np.nan
+                    mr = mreq / req if req > 0 else np.nan
+                    sr = imp / req if req > 0 else np.nan
+                    ctr = clk / imp if imp > 0 else np.nan
+                    imp_user = imp / user if user > 0 else np.nan
+                    imp_new = imp / newu if newu > 0 else np.nan
+                    req_user = req / user if user > 0 else np.nan
+                    req_new = req / newu if newu > 0 else np.nan
+                    rev_user = rev / user if user > 0 else np.nan
+                    rev_new = rev / newu if newu > 0 else np.nan
                     return dict(mr=mr, sr=sr, ctr=ctr, imp_user=imp_user, imp_new=imp_new, req_user=req_user, req_new=req_new, rev_user=rev_user, rev_new=rev_new)
+
                 def ratio(a, b):
-                    return np.nan if (pd.isna(a) or a==0 or pd.isna(b)) else (b-a)/a
+                    return np.nan if (pd.isna(a) or a == 0 or pd.isna(b)) else (b - a) / a
+
                 def pct(v):
                     return "" if pd.isna(v) else f"{v*100:.2f}%"
+
                 lines = []
                 for prefix, label in ANALYZE_GROUPS:
                     A = agg_group(va, prefix)
@@ -1521,9 +1684,19 @@ with tabs[1]:
                     if not B:
                         continue
                     comps = []
-                    for k, alias in [("mr","MR"),("sr","SR"),("ctr","CTR"),("imp_user","imp/user"),("imp_new","imp/new user"),("req_user","req/user"),("req_new","req/new user"),("rev_user","rev/user"),("rev_new","rev/new user")]:
-                        r = ratio(A.get(k,np.nan), B.get(k,np.nan))
-                        comps.append(f"{alias}: {pct(r) if pct(r)!='' else '—'}")
+                    for k, alias in [
+                        ("mr", "MR"),
+                        ("sr", "SR"),
+                        ("ctr", "CTR"),
+                        ("imp_user", "imp/user"),
+                        ("imp_new", "imp/new user"),
+                        ("req_user", "req/user"),
+                        ("req_new", "req/new user"),
+                        ("rev_user", "rev/user"),
+                        ("rev_new", "rev/new user"),
+                    ]:
+                        r = ratio(A.get(k, np.nan), B.get(k, np.nan))
+                        comps.append(f"{alias}: {pct(r) if pct(r) != '' else '—'}")
                     lines.append(f"{label}: " + ", ".join(comps))
                 if not lines:
                     lines.append("Version B không có nhóm nằm trong danh mục phân tích.")
@@ -1540,6 +1713,7 @@ with tabs[1]:
                 rev_map = _daily_revenue_map(df_src, [va, vb])
                 user_total_a, _ = _fb_totals_for_version(fb_df, df_src, va)
                 user_total_b, _ = _fb_totals_for_version(fb_df, df_src, vb)
+
                 def collect(ver: str, fb_total_user: Optional[float]):
                     rev_list, user_list = [], []
                     for d in day_cols:
@@ -1552,6 +1726,7 @@ with tabs[1]:
                     rpu_list = [(rev_list[i] / user_list[i]) if (user_list[i] and user_list[i] > 0) else np.nan for i in range(len(day_cols))]
                     rpu_total = (total_rev / total_user) if (total_user and total_user > 0) else np.nan
                     return dict(rev=rev_list, user=user_list, total_rev=total_rev, total_user=total_user, rpu_list=rpu_list, rpu_total=rpu_total)
+
                 A = collect(va, user_total_a)
                 B = collect(vb, user_total_b)
                 pct_list = []
@@ -1563,12 +1738,7 @@ with tabs[1]:
                 pct_total = ((B["rpu_total"] - A["rpu_total"]) / A["rpu_total"]) if (pd.notna(A["rpu_total"]) and A["rpu_total"] > 0 and pd.notna(B["rpu_total"])) else np.nan
                 return dict(day_cols=day_cols, version_a=A, version_b=B, change_pct_per_day=pct_list, change_pct_total=pct_total)
 
-            def build_snapshot_obj(snapshot_name: str,
-                                   df_view_local: pd.DataFrame,
-                                   va: str, vb: str,
-                                   df_src: pd.DataFrame,
-                                   fb_df: Optional[pd.DataFrame],
-                                   analysis_lines: List[str]) -> dict:
+            def build_snapshot_obj(snapshot_name: str, df_view_local: pd.DataFrame, va: str, vb: str, df_src: pd.DataFrame, fb_df: Optional[pd.DataFrame], analysis_lines: List[str]) -> dict:
                 detail_df = build_sheet_template_df(df_view_local)
                 daily = compute_daily_state(df_src, fb_df, va, vb)
                 table_rows = df_to_string_rows(df_view_local)
@@ -1583,14 +1753,8 @@ with tabs[1]:
                     },
                     "daily": daily,
                     "analysis_lines": analysis_lines,
-                    "table": {
-                        "columns": list(df_view_local.columns),
-                        "rows": table_rows,
-                    },
-                    "detail_table": {
-                        "columns": list(detail_df.columns),
-                        "rows": detail_rows,
-                    },
+                    "table": {"columns": list(df_view_local.columns), "rows": table_rows},
+                    "detail_table": {"columns": list(detail_df.columns), "rows": detail_rows},
                 }
                 return snap
 
@@ -1656,7 +1820,7 @@ with tabs[1]:
                 arr = r.json()
                 out = []
                 for it in arr:
-                    if it.get("type") == "file" and it.get("name","").lower().endswith(".json"):
+                    if it.get("type") == "file" and it.get("name", "").lower().endswith(".json"):
                         out.append({"name": it["name"], "path": it["path"], "sha": it["sha"]})
                 out.sort(key=lambda x: x["name"], reverse=True)
                 return out
@@ -1680,14 +1844,7 @@ with tabs[1]:
             c1, c2, c3 = st.columns([0.25, 0.25, 0.5])
             with c1:
                 if st.button("Lưu snapshot (chọn nơi lưu)", type="primary", use_container_width=True):
-                    snap = build_snapshot_obj(
-                        snap_name,
-                        df_view,
-                        version_a, version_b,
-                        st.session_state.get("global_df"),
-                        st.session_state.get("firebase_df"),
-                        analysis_lines_now,
-                    )
+                    snap = build_snapshot_obj(snap_name, df_view, version_a, version_b, st.session_state.get("global_df"), st.session_state.get("firebase_df"), analysis_lines_now)
                     if st.session_state["snap_storage"] == "Local":
                         path = save_snapshot_local(snap)
                         st.success(f"Đã lưu local: {path}")
@@ -1703,14 +1860,7 @@ with tabs[1]:
                         else:
                             st.success("Đã lưu snapshot lên GitHub.")
             with c2:
-                snap_preview = build_snapshot_obj(
-                    snap_name,
-                    df_view,
-                    version_a, version_b,
-                    st.session_state.get("global_df"),
-                    st.session_state.get("firebase_df"),
-                    analysis_lines_now,
-                )
+                snap_preview = build_snapshot_obj(snap_name, df_view, version_a, version_b, st.session_state.get("global_df"), st.session_state.get("firebase_df"), analysis_lines_now)
                 st.download_button("Tải snapshot (.json)", data=json.dumps(snap_preview, ensure_ascii=False, indent=2).encode("utf-8"), file_name=f"{_slug(snap_name)}.json", mime="application/json", use_container_width=True)
 
             with c3:
@@ -1724,15 +1874,17 @@ with tabs[1]:
                         st.info("Khôi phục inputs & ngày từ file upload?")
                         if st.button("Khôi phục (từ file upload)", use_container_width=True):
                             meta = snap_obj.get("meta", {})
-                            va, vb = str(meta.get("version_a","")), str(meta.get("version_b",""))
+                            va, vb = str(meta.get("version_a", "")), str(meta.get("version_b", ""))
                             dl = snap_obj.get("daily", {})
                             days = dl.get("day_cols", [])
                             pair_key = _pair_key(va, vb)
                             st.session_state.setdefault("checkver_daycols", {})
                             st.session_state["checkver_daycols"][pair_key] = days
+
                             def set_list(prefix: str, ver: str, arr: list):
                                 for i, d in enumerate(days):
                                     st.session_state[f"{prefix}_{ver}_{d}"] = float(arr[i]) if i < len(arr) else 0.0
+
                             A = dl.get("version_a", {})
                             B = dl.get("version_b", {})
                             set_list("rev_in", va, A.get("rev", []))
@@ -1761,15 +1913,17 @@ with tabs[1]:
                             snap = load_snapshot_local(sel)
                             if snap:
                                 meta = snap.get("meta", {})
-                                va, vb = str(meta.get("version_a","")), str(meta.get("version_b",""))
+                                va, vb = str(meta.get("version_a", "")), str(meta.get("version_b", ""))
                                 dl = snap.get("daily", {})
                                 days = dl.get("day_cols", [])
                                 pair_key = _pair_key(va, vb)
                                 st.session_state.setdefault("checkver_daycols", {})
                                 st.session_state["checkver_daycols"][pair_key] = days
+
                                 def set_list(prefix: str, ver: str, arr: list):
                                     for i, d in enumerate(days):
                                         st.session_state[f"{prefix}_{ver}_{d}"] = float(arr[i]) if i < len(arr) else 0.0
+
                                 A = dl.get("version_a", {})
                                 B = dl.get("version_b", {})
                                 set_list("rev_in", va, A.get("rev", []))
@@ -1795,7 +1949,7 @@ with tabs[1]:
                 st.caption("Danh sách snapshot trên GitHub")
                 try:
                     owner = st.session_state["gh_owner"].strip()
-                    repo  = st.session_state["gh_repo"].strip()
+                    repo = st.session_state["gh_repo"].strip()
                     branch = st.session_state["gh_branch"].strip() or "main"
                     folder = st.session_state["gh_folder"].strip().strip("/")
                     files = gh_list_files(owner, repo, folder, branch)
@@ -1825,15 +1979,17 @@ with tabs[1]:
                                 _, content, _ = gh_get_file(owner, repo, file_sel["path"], branch)
                                 snap = json.loads(content.decode("utf-8"))
                                 meta = snap.get("meta", {})
-                                va, vb = str(meta.get("version_a","")), str(meta.get("version_b",""))
+                                va, vb = str(meta.get("version_a", "")), str(meta.get("version_b", ""))
                                 dl = snap.get("daily", {})
                                 days = dl.get("day_cols", [])
                                 pair_key = _pair_key(va, vb)
                                 st.session_state.setdefault("checkver_daycols", {})
                                 st.session_state["checkver_daycols"][pair_key] = days
+
                                 def set_list(prefix: str, ver: str, arr: list):
                                     for i, d in enumerate(days):
                                         st.session_state[f"{prefix}_{ver}_{d}"] = float(arr[i]) if i < len(arr) else 0.0
+
                                 A = dl.get("version_a", {})
                                 B = dl.get("version_b", {})
                                 set_list("rev_in", va, A.get("rev", []))
